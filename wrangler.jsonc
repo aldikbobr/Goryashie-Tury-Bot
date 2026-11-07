@@ -1,0 +1,12 @@
+{
+  "name": "goryashie-tury-bot",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-07",
+  // хранилище туров
+  "kv_namespaces": [{ "binding": "TOURS", "id": "7c6d5e1a412f49be8bbee52b952b48ae" }],
+  "vars": {
+    "CHANNEL_ID": "@CHANNEL",
+    "CONTACT_URL": "",
+    "POSTS_PER_UPDATE": "3"
+  }
+}

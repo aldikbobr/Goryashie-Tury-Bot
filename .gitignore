@@ -1,0 +1,4 @@
+.wrangler
+node_modules
+.update-secret
+tours.json
