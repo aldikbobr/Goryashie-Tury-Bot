@@ -6,7 +6,7 @@
   "kv_namespaces": [{ "binding": "TOURS", "id": "7c6d5e1a412f49be8bbee52b952b48ae" }],
   "vars": {
     "CHANNEL_ID": "@goryashie_tury_astana",
-    "CONTACT_URL": "",
+    "CONTACT_URL": "https://wa.me/77752728282",
     "POSTS_PER_UPDATE": "3",
     // ссылка «Поделиться» из кабинета агентства (tvclid — номер агентства в Tourvisor)
     "TOUR_LINK": "https://tourcart.ru/#tvofferid={id}&tvclid=95519&tvcu=3&tvnl=3"

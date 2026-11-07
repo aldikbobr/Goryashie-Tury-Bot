@@ -28,7 +28,7 @@ sent.length = 0;
 await post('/tg', { callback_query: { id: 'q', data: 'c:Таиланд', message: { chat: { id: 7 } } } }, { 'x-telegram-bot-api-secret-token': 'g' });
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2', 'Тур 1']); // дешёвые первыми
-assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1']);
+assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
 
 assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env)).status, 404);

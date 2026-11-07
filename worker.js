@@ -22,7 +22,8 @@ function caption(t, updated) {
 
 function buttons(env, t) {
   const row = [{ text: 'Посмотреть тур', url: env.TOUR_LINK.replace('{id}', t.id) }];
-  if (env.CONTACT_URL) row.push({ text: 'Забронировать', url: env.CONTACT_URL });
+  // в WhatsApp сразу подставляется название тура, чтобы менеджер понял, о чём речь
+  if (env.CONTACT_URL) row.push({ text: 'Забронировать', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу забронировать тур: ${t.title}`)}` });
   return { inline_keyboard: [row] };
 }
 
