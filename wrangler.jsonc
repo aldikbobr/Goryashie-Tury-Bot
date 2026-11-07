@@ -5,7 +5,7 @@
   // хранилище туров
   "kv_namespaces": [{ "binding": "TOURS", "id": "7c6d5e1a412f49be8bbee52b952b48ae" }],
   "vars": {
-    "CHANNEL_ID": "",
+    "CHANNEL_ID": "@goryashie_tury_astana",
     "CONTACT_URL": "",
     "POSTS_PER_UPDATE": "3",
     // ссылка «Поделиться» из кабинета агентства (tvclid — номер агентства в Tourvisor)
