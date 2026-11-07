@@ -21,8 +21,7 @@ function caption(t, updated) {
 }
 
 function buttons(env, t) {
-  const row = [];
-  if (t.link) row.push({ text: 'Посмотреть тур', url: t.link });
+  const row = [{ text: 'Посмотреть тур', url: env.TOUR_LINK.replace('{id}', t.id) }];
   if (env.CONTACT_URL) row.push({ text: 'Забронировать', url: env.CONTACT_URL });
   return { inline_keyboard: [row] };
 }
@@ -47,13 +46,14 @@ async function onUpdate(req, env) {
   const fresh = data.items.filter(t => !posted.has(t.id))
     .sort((a, b) => (b.oldPrice - b.price) / (b.oldPrice || 1) - (a.oldPrice - a.price) / (a.oldPrice || 1))
     .slice(0, Number(env.POSTS_PER_UPDATE || 3));
-  for (const t of fresh) {
-    await sendTour(env, env.CHANNEL_ID, t, data.updated);
-    posted.add(t.id);
+  let sent = 0;
+  for (const t of env.CHANNEL_ID ? fresh : []) {
+    const r = await sendTour(env, env.CHANNEL_ID, t, data.updated);
+    if (r.ok) { posted.add(t.id); sent++; }
   }
   // ponytail: храним последние 500 id, этого хватает на месяцы
   await env.TOURS.put('posted', JSON.stringify([...posted].slice(-500)));
-  return Response.json({ saved: data.items.length, posted: fresh.length });
+  return Response.json({ saved: data.items.length, posted: sent });
 }
 
 async function onTelegram(req, env) {
@@ -89,10 +89,17 @@ async function onTelegram(req, env) {
   return new Response('ok');
 }
 
+// /update вызывается прямо со страницы кабинета Tourvisor, поэтому разрешаем запросы оттуда
+const CORS = { 'access-control-allow-origin': 'https://pro.tourvisor.ru', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type, x-secret' };
+
 export default {
   async fetch(req, env) {
     const { pathname } = new URL(req.url);
-    if (req.method === 'POST' && pathname === '/update') return onUpdate(req, env);
+    if (req.method === 'OPTIONS' && pathname === '/update') return new Response(null, { headers: CORS });
+    if (req.method === 'POST' && pathname === '/update') {
+      const r = await onUpdate(req, env);
+      return new Response(r.body, { status: r.status, headers: { ...Object.fromEntries(r.headers), ...CORS } });
+    }
     if (req.method === 'POST' && pathname === '/tg') return onTelegram(req, env);
     return new Response('Not found', { status: 404 });
   },
