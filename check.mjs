@@ -36,6 +36,7 @@ assert.equal(r.posted, 1); // уже опубликованные не повт�
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
 assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔥 Подобрать тур' }]]);
+assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
 assert.match(sent[1].text, /Выберите страну/);
 const wizardId = msgId;
 

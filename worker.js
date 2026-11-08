@@ -192,7 +192,8 @@ async function onTelegram(req, env) {
     await tg(env, 'sendMessage', {
       chat_id,
       text: 'Здравствуйте! Здесь горящие туры из Астаны. Кнопка «🔥 Подобрать тур» всегда внизу экрана.',
-      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true },
+      // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘
+      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур — значок справа ⌘' },
     });
   }
   await startWizard(env, chat_id, data, now);
