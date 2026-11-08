@@ -37,7 +37,7 @@ sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
 assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔥 Подобрать тур' }]]);
 assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
-assert.match(sent[1].text, /Выберите страну/);
+assert.match(sent[1].text, /Сколько взрослых/); // первым шагом — туристы
 const wizardId = msgId;
 
 // клиент проходит шаги, нажимая кнопки
@@ -48,27 +48,27 @@ const press = async label => {
   await post('/tg', { callback_query: { id: 'q', data: btn.callback_data, message: { chat: { id: 7 }, message_id: wizardId } } }, TG);
   assert.ok(btn.callback_data.length <= 64);
 };
-await press('Таиланд'); assert.match(sent.at(-1).text, /Сколько взрослых/);
 await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
 await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
-await press('5'); assert.match(sent.at(-1).text, /Сколько ночей/);
+await press('5'); assert.match(sent.at(-1).text, /Выберите страну/);
+await press('Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
 await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
 await press('Ближайшие 2 недели');
 const resultIds = [msgId - 1, msgId]; // фото тура и сообщение с кнопкой заявки
 
 // итог: запрос, подходящий тур (только 7 ночей в Таиланд), кнопка заявки менеджеру
-assert.match(sent[1].text, /Страна: Таиланд\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
-assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nСтрана: Таиланд/);
+assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nТуристы: 2 взр\./);
 
 // «Подобрать тур» удаляет старую подборку (шаги, туры, итог, само нажатие) и начинает заново
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔥 Подобрать тур' } }, TG);
 assert.equal(sent[0].method, 'deleteMessages');
 assert.deepEqual(sent[0].message_ids.sort(), [wizardId, ...resultIds, 55].sort());
-assert.match(sent[1].text, /Выберите страну/);
+assert.match(sent[1].text, /Сколько взрослых/);
 assert.equal(sent.length, 2); // без повторного приветствия
 
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');

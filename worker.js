@@ -58,7 +58,7 @@ async function onUpdate(req, env) {
   return Response.json({ saved: data.items.length, posted: sent });
 }
 
-// ---------- Пошаговый подбор: страна → взрослые → дети и их возраст → ночи → период ----------
+// ---------- Пошаговый подбор: взрослые → дети и их возраст → страна → ночи → период ----------
 // Выбор хранится прямо в кнопках: w:страна:взрослые:дети:возрасты:ночи:период (страна и период — номера в списках).
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -95,8 +95,8 @@ const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : '
 
 function summary(w, data, now) {
   const lines = [];
-  if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 1 года' : a + ' лет')).join(', ')})` : '') : ''));
+  if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
   return lines.join('\n');
@@ -105,15 +105,15 @@ function summary(w, data, now) {
 // следующий вопрос; null — всё выбрано
 function step(w, data, now) {
   const head = (summary(w, data, now) ? summary(w, data, now) + '\n\n' : '') + '👉 ';
-  if (!w.c) {
-    const btns = countriesOf(data).map((c, i) => pick(w, 'c', { text: c, v: String(i) }));
-    return { text: head + 'Выберите страну:', kb: [...rows(btns, 2), [pick(w, 'c', { text: 'Любая страна', v: '*' })]] };
-  }
   if (!w.a) return { text: head + 'Сколько взрослых?', kb: rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4) };
   if (!w.k) return { text: head + 'Сколько детей?', kb: rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4) };
   if (w.ages.length < +w.k) {
     const btns = Array.from({ length: 18 }, (_, a) => ({ text: a === 0 ? 'до 1' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
     return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: rows(btns, 6) };
+  }
+  if (!w.c) {
+    const btns = countriesOf(data).map((c, i) => pick(w, 'c', { text: c, v: String(i) }));
+    return { text: head + 'Выберите страну:', kb: [...rows(btns, 2), [pick(w, 'c', { text: 'Любая страна', v: '*' })]] };
   }
   if (!w.n) return { text: head + 'Сколько ночей?', kb: rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2) };
   if (!w.p) return { text: head + 'Когда хотите лететь?', kb: rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2) };
