@@ -18,6 +18,8 @@ globalThis.fetch = async (url, o) => {
   if (url.includes('tourvisor.ru')) {
     tvCalls.push(url);
     if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
+    if (url.includes('listdev')) return Response.json({ lists: { regions: { region: [
+      { id: 6, name: 'Пхукет', parentid: 0 }, { id: 5, name: 'Паттайя', parentid: 0 }, { id: 600, name: 'Патонг', parentid: 6 }] } } });
     return Response.json(url.includes('modsearch') ? { result: { requestid: 1 } } : tvResult);
   }
   sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
@@ -35,7 +37,7 @@ const TG = { 'x-telegram-bot-api-secret-token': 'g' };
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const soon = new Date(Date.now() + 5 * 864e5);
 const when = `${soon.getUTCDate()} ${MONTHS[soon.getUTCMonth()]}`;
-const t = (id, country, price, oldPrice, nights) => ({ id, country, price, oldPrice, title: 'Тур ' + id, descr: `5*, ${country} из Астаны ${when} на ${nights} ночей, Завтрак.`, discount: '', img: 'https://img/' + id + '.jpg' });
+const t = (id, country, price, oldPrice, nights) => ({ id, country, price, oldPrice, title: 'Тур ' + id, descr: `5*, ${country}${country === 'Таиланд' ? ', Пхукет' : ''} из Астаны ${when} на ${nights} ночей, Завтрак.`, discount: '', img: 'https://img/' + id + '.jpg' });
 const items = [t('1', 'Таиланд', 500000, 600000, 14), t('2', 'Таиланд', 300000, 600000, 7), t('3', 'ОАЭ', 400000, 410000, 7)];
 
 // разбор даты, ночей и питания; январь при текущем ноябре — следующий год
@@ -92,19 +94,22 @@ const wizard = async () => {
   const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
   assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
   assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
-  await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
+  await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
+  // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
+  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['Любой курорт', 'Пхукет', 'Паттайя']);
+  await press('Пхукет'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
   await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
   await press('Ближайшие 2 недели');
 };
 await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
-assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
 assert.match(sent[2].text, /Ищу туры/);
 assert.equal(sent[3].method, 'deleteMessage');
 // в поиск Tourvisor ушли параметры клиента
 const sq = new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams;
-assert.deepEqual(['country', 'departure', 'adults', 'child', 'childage1', 'meal', 'nightsfrom', 'nightsto', 'currency'].map(k => sq.get(k)), ['2', '59', '2', '1', '5', '3', '6', '9', '3']);
+assert.deepEqual(['country', 'regions', 'departure', 'adults', 'child', 'childage1', 'meal', 'nightsfrom', 'nightsto', 'currency'].map(k => sq.get(k)), ['2', '6', '59', '2', '1', '5', '3', '6', '9', '3']);
 const groups = sent.slice(4, 7);
 assert.deepEqual(groups.map(m => m.text.match(/Рейтинг ([^<]+)</)[1]), ['4,5–5', '4–4,5', '3,7–4']);
 assert.match(groups[0].text, /ALPHA RESORT<\/b> 5\* · рейтинг <b>4,8<\/b>[\s\S]*Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак[\s\S]*100\s000 ₸/);
@@ -147,6 +152,7 @@ assert.match(alert.text, /Поиск Tourvisor не сработал/);
 const links = sent.find(m => /Подборки по рейтингу/.test(m.text || ''));
 assert.deepEqual(links.reply_markup.inline_keyboard.map(r => r[0].text), ['⭐ Рейтинг 4,5 и выше', '⭐ Рейтинг 4,0 и выше', '⭐ Рейтинг 3,5 и выше']);
 const lq = new URL(links.reply_markup.inline_keyboard[0][0].url).searchParams;
+assert.equal(lq.get('s_region_to'), '6'); // Пхукет
 assert.deepEqual(['s_rating', 's_country', 's_flyfrom', 's_adults', 's_child', 's_child_age_1', 's_meal'].map(k => lq.get(k)), ['5', '2', '59', '2', '1', '5', '3']);
 const day = s => Date.UTC(...s.split('.').reverse().map((v, i) => (i === 1 ? v - 1 : +v)));
 assert.ok((day(lq.get('s_j_date_to')) - day(lq.get('s_j_date_from'))) / 864e5 <= 20); // лимит Tourvisor — 21 день

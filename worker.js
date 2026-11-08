@@ -59,7 +59,7 @@ async function onUpdate(req, env) {
   return Response.json({ saved: data.items.length, posted: sent });
 }
 
-// ---------- Пошаговый подбор: взрослые → дети и их возраст → питание → страна → ночи → период ----------
+// ---------- Пошаговый подбор: взрослые → дети и их возраст → питание → страна → курорт → ночи → период ----------
 // Выбор хранится прямо в кнопках: w:страна:взрослые:дети:возрасты:ночи:период (страна и период — номера в списках).
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -123,6 +123,24 @@ const MEAL_IDS = [2, 3, 4, 5, 7, 9]; // RO, BB, HB, FB, AI, UAI — в том ж
 // у Tourvisor фильтр рейтинга только «от»: s_rating 5 = 4,5+, 4 = 4,0+, 3 = 3,5+
 const RATINGS = [['⭐ Рейтинг 4,5 и выше', 5], ['⭐ Рейтинг 4,0 и выше', 4], ['⭐ Рейтинг 3,5 и выше', 3]];
 const ddmmyyyy = ms => new Date(ms).toISOString().slice(0, 10).split('-').reverse().join('.');
+const countryId = w => COUNTRY_IDS[COUNTRIES[+w.c]];
+
+// Курорты страны — как список «Любой курорт» в поиске Tourvisor (без мелких районов). Хранятся 7 дней.
+const REGIONS = new Map(); // номер страны → [[номер курорта, название], …]
+export async function loadRegions(env, cid) {
+  if (REGIONS.has(cid)) return REGIONS.get(cid);
+  let list = JSON.parse((await env.TOURS.get('r:' + cid)) || 'null');
+  if (!list) {
+    try {
+      const j = await fetch(`https://tourvisor.ru/xml/listdev.php?type=region&regcountry=${cid}&cndep=59&flydeparture=59&flycountry=${cid}&format=json`, { headers: TV_HEADERS }).then(x => x.json());
+      list = ((j.lists || j).regions?.region || []).filter(r => +r.parentid === 0).map(r => [r.id, r.name]);
+      await env.TOURS.put('r:' + cid, JSON.stringify(list), { expirationTtl: 7 * 86400 });
+    } catch { list = []; } // Tourvisor не ответил — шаг «Курорт» пропускаем
+  }
+  REGIONS.set(cid, list);
+  return list;
+}
+const regionName = w => (REGIONS.get(countryId(w)) || []).find(([id]) => String(id) === w.r)?.[1];
 
 // даты и ночи для Tourvisor: вылеты с завтрашнего дня, не больше 21 дня (лимит Tourvisor)
 function range(w, now) {
@@ -144,6 +162,7 @@ export function searchLink(w, now, rating, hotel) {
     s_j_date_from: hotel ? hotel.date : r.from, s_j_date_to: hotel ? hotel.date : r.to, s_rating: rating,
   });
   if (hotel) p.set('x_hotel_codes', hotel.id);
+  if (w.r && w.r !== '*') p.set('s_region_to', w.r);
   if (+w.k) { p.set('s_child', w.k); w.ages.forEach((a, i) => p.set(`s_child_age_${i + 1}`, a === '0' ? 1 : a)); }
   if (w.f !== '*') p.set('s_meal', MEAL_IDS[+w.f]); // Tourvisor ищет «и лучше»
   return 'https://tourvisor.ru/search.php?' + p;
@@ -162,6 +181,7 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
     directflight: 0, regular: 1, pricefrom: 0, priceto: 0, formmode: 0, origincountry: 3, pricetype: 0,
   });
   w.ages.forEach((a, i) => p.set(`childage${i + 1}`, a === '0' ? 1 : a));
+  if (w.r && w.r !== '*') p.set('regions', w.r);
   const start = await fetch('https://tourvisor.ru/xml/modsearch.php?' + p, { headers: TV_HEADERS }).then(x => x.json());
   const id = start?.result?.requestid;
   if (!id) throw new Error('нет requestid: ' + JSON.stringify(start).slice(0, 100));
@@ -205,7 +225,7 @@ function groupMessage(w, now, g) {
 
 // подборки по рейтингу: результат поиска хранится 30 минут, чтобы не искать одно и то же повторно
 async function ratingSelections(env, w, now) {
-  const key = 'q:' + [w.a, w.k, w.ages.join('.'), w.f, w.c, w.n, w.p, range(w, now).from].join(':');
+  const key = 'q:' + [w.a, w.k, w.ages.join('.'), w.f, w.c, w.r, w.n, w.p, range(w, now).from].join(':');
   const cached = await env.TOURS.get(key);
   if (cached) return JSON.parse(cached);
   const hotels = await tvSearch(w, now);
@@ -220,8 +240,8 @@ async function alertAdmin(env, text) {
   await env.TOURS.put('alerted', '1', { expirationTtl: 6 * 3600 });
   await tg(env, 'sendMessage', { chat_id: admin, text: '⚠️ ' + text });
 }
-const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f }; };
-const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f].join(':');
+const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = '', r = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f, r }; };
+const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f, w.r].join(':');
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
 const rows = (btns, per) => { const r = []; for (let i = 0; i < btns.length; i += per) r.push(btns.slice(i, i + per)); return r; };
 const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : 'детей');
@@ -231,6 +251,7 @@ function summary(w, data, now) {
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
   if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
+  if (w.r && w.c !== '*') lines.push('Курорт: ' + (w.r === '*' ? 'любой' : regionName(w) || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
   return lines.join('\n');
@@ -256,6 +277,14 @@ function step(w, data, now) {
     const btns = COUNTRIES.map((c, i) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
   }
+  if (!w.r) {
+    const regs = w.c === '*' ? [] : REGIONS.get(countryId(w)) || [];
+    if (!regs.length) return step({ ...w, r: '*' }, data, now); // курортов нет — шаг пропускаем
+    return {
+      text: head + 'Выберите курорт:',
+      kb: [[pick(w, 'r', { text: 'Любой курорт', v: '*' })], ...rows(regs.map(([id, name]) => pick(w, 'r', { text: name, v: String(id) })), 3)],
+    };
+  }
   if (!w.n) return { text: head + 'Сколько ночей?', kb: rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2) };
   if (!w.p) return { text: head + 'Когда хотите лететь?', kb: rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2) };
   return null;
@@ -263,11 +292,13 @@ function step(w, data, now) {
 
 function matches(w, data, now) {
   const country = w.c === '*' ? null : countriesOf(data)[+w.c];
+  // курорт в горящих турах указан только в тексте: «Фуджейра» → ищем «фудже» (ловит и «в Фуджейру»)
+  const resort = w.r && w.r !== '*' && regionName(w)?.toLowerCase().slice(0, 5);
   const [, nMin, nMax] = NIGHTS[+w.n];
   const [, from, to] = periods(now)[+w.p];
   return data.items.filter(t => {
     const { date, nights, meal } = tourInfo(t, now);
-    return (!country || t.country === country) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
+    return (!country || t.country === country) && (!resort || (t.title + ' ' + t.descr).toLowerCase().includes(resort)) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
       && (w.f === '*' || meal === undefined || meal >= +w.f);
   }).sort((a, b) => a.price - b.price).slice(0, 5);
 }
@@ -298,6 +329,7 @@ async function onTelegram(req, env, ctx) {
     await tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
     if (!q.data.startsWith('w')) return new Response('ok'); // кнопки из старой версии бота
     const w = decode(q.data);
+    if (w.c && w.c !== '*') await loadRegions(env, countryId(w));
     const s = step(w, data, now);
     if (s) {
       await tg(env, 'editMessageText', { chat_id, message_id, text: s.text, reply_markup: { inline_keyboard: s.kb } });
