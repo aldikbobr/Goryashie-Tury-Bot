@@ -95,7 +95,7 @@ const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : '
 
 function summary(w, data, now) {
   const lines = [];
-  if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 1 года' : a + ' лет')).join(', ')})` : '') : ''));
+  if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
@@ -108,7 +108,8 @@ function step(w, data, now) {
   if (!w.a) return { text: head + 'Сколько взрослых?', kb: rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4) };
   if (!w.k) return { text: head + 'Сколько детей?', kb: rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4) };
   if (w.ages.length < +w.k) {
-    const btns = Array.from({ length: 18 }, (_, a) => ({ text: a === 0 ? 'до 1' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
+    // «до 2» (значение 0), затем 2…17 лет
+    const btns = [0, ...Array.from({ length: 16 }, (_, i) => i + 2)].map(a => ({ text: a === 0 ? 'до 2' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
     return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: rows(btns, 6) };
   }
   if (!w.c) {
