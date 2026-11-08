@@ -52,7 +52,10 @@ await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
 await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
 await press('5'); assert.match(sent.at(-1).text, /Выберите страну/);
-await press('Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
+const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
+assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
+assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
+await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
 await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
 await press('Ближайшие 2 недели');
 const resultIds = [msgId - 1, msgId]; // фото тура и сообщение с кнопкой заявки

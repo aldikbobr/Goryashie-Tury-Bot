@@ -86,7 +86,14 @@ export function periods(now = new Date()) {
   return list;
 }
 
-const countriesOf = data => [...new Set(data.items.map(t => t.country))].sort();
+// Страны из поиска Tourvisor с вылетом из Астаны (08.11.2026): сначала популярные, как у Tourvisor, затем по алфавиту.
+// ponytail: список зашит вручную; если у Tourvisor появятся новые направления — дописать сюда.
+const COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', 'Россия', 'Китай', 'Вьетнам',
+  'Австрия', 'Азербайджан', 'Армения', 'Бахрейн', 'Беларусь', 'Венгрия', 'Греция', 'Грузия', 'Доминикана', 'Индия',
+  'Индонезия', 'Испания', 'Италия', 'Казахстан', 'Катар', 'Кипр', 'Кыргызстан', 'Маврикий', 'Малайзия', 'Мальдивы',
+  'Марокко', 'Оман', 'Сейшелы', 'Сербия', 'Сингапур', 'Словения', 'Танзания', 'Тунис', 'Узбекистан', 'Франция',
+  'Черногория', 'Чехия', 'Шри-Ланка', 'Южная Корея', 'Япония'];
+const countriesOf = () => COUNTRIES;
 const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p }; };
 const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p].join(':');
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
@@ -113,8 +120,10 @@ function step(w, data, now) {
     return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: rows(btns, 6) };
   }
   if (!w.c) {
-    const btns = countriesOf(data).map((c, i) => pick(w, 'c', { text: c, v: String(i) }));
-    return { text: head + 'Выберите страну:', kb: [...rows(btns, 2), [pick(w, 'c', { text: 'Любая страна', v: '*' })]] };
+    // 🔥 — по этой стране сейчас есть горящие туры
+    const hot = new Set(data.items.map(t => t.country));
+    const btns = COUNTRIES.map((c, i) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
+    return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
   }
   if (!w.n) return { text: head + 'Сколько ночей?', kb: rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2) };
   if (!w.p) return { text: head + 'Когда хотите лететь?', kb: rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2) };
@@ -141,7 +150,6 @@ async function startWizard(env, chat_id, data, now) {
   const old = JSON.parse((await env.TOURS.get('m:' + chat_id)) || '[]');
   if (old.length) await tg(env, 'deleteMessages', { chat_id, message_ids: old });
   await env.TOURS.delete('m:' + chat_id);
-  if (!data.items.length) return tg(env, 'sendMessage', { chat_id, text: 'Список туров обновляется. Загляните чуть позже.' });
   const s = step(decode('w'), data, now);
   const r = await tg(env, 'sendMessage', { chat_id, text: s.text, reply_markup: { inline_keyboard: s.kb } });
   if (r.ok) await remember(env, chat_id, [r.result.message_id]);
