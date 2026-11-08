@@ -22,7 +22,13 @@ assert.equal(r.posted, 1); // уже опубликованные не повт�
 
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, text: '/start' } }, { 'x-telegram-bot-api-secret-token': 'g' });
-assert.deepEqual(sent[0].reply_markup.inline_keyboard, [[{ text: 'ОАЭ', callback_data: 'c:ОАЭ' }, { text: 'Таиланд', callback_data: 'c:Таиланд' }]]);
+assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔥 Подобрать тур' }]]); // постоянная кнопка внизу
+assert.deepEqual(sent[1].reply_markup.inline_keyboard,[[{ text: 'ОАЭ', callback_data: 'c:ОАЭ' }, { text: 'Таиланд', callback_data: 'c:Таиланд' }]]);
+
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 7 }, text: '🔥 Подобрать тур' } }, { 'x-telegram-bot-api-secret-token': 'g' });
+assert.equal(sent.length, 1); // нажатие кнопки сразу показывает страны, без приветствия
+assert.ok(sent[0].reply_markup.inline_keyboard);
 
 sent.length = 0;
 await post('/tg', { callback_query: { id: 'q', data: 'c:Таиланд', message: { chat: { id: 7 } } } }, { 'x-telegram-bot-api-secret-token': 'g' });

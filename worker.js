@@ -11,6 +11,7 @@ const tg = (env, method, body) =>
     body: JSON.stringify(body),
   }).then(r => r.json());
 
+const MENU_BUTTON = '🔥 Подобрать тур';
 const money = n => n.toLocaleString('ru-RU').replace(/,/g, ' ') + ' ₸';
 const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
@@ -74,6 +75,13 @@ async function onTelegram(req, env) {
 
   const chat_id = u.message?.chat?.id;
   if (!chat_id) return new Response('ok');
+  // кнопка «Подобрать тур» всегда внизу экрана, под полем ввода
+  if (u.message.text !== MENU_BUTTON)
+    await tg(env, 'sendMessage', {
+      chat_id,
+      text: 'Здравствуйте! Здесь горящие туры из Астаны. Кнопка «🔥 Подобрать тур» всегда внизу экрана.',
+      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true },
+    });
   const countries = [...new Set(data.items.map(t => t.country))].sort();
   if (!countries.length) {
     await tg(env, 'sendMessage', { chat_id, text: 'Список туров обновляется. Загляните чуть позже.' });
@@ -84,7 +92,7 @@ async function onTelegram(req, env) {
     kb.push(countries.slice(i, i + 2).map(c => ({ text: c, callback_data: 'c:' + c })));
   await tg(env, 'sendMessage', {
     chat_id,
-    text: 'Здравствуйте! Здесь горящие туры из Астаны. Выберите страну:',
+    text: 'Выберите страну:',
     reply_markup: { inline_keyboard: kb },
   });
   return new Response('ok');
