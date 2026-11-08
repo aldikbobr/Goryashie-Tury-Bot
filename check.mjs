@@ -22,6 +22,10 @@ const items = [t('1', 'Таиланд', 500000, 600000, 14), t('2', 'Таила�
 const info = tourInfo({ descr: '5*, Таиланд из Астаны 9 января на 12 ночей, Завтрак.' }, new Date(Date.UTC(2026, 10, 8)));
 assert.equal(info.date.toISOString().slice(0, 10), '2027-01-09');
 assert.equal(info.nights, 12);
+assert.equal(info.meal, 1); // Завтрак
+assert.equal(tourInfo({ descr: '5*, ОАЭ из Астаны 8 ноября на 10 ночей, Без питания. Отель' }).meal, 0);
+assert.equal(tourInfo({ descr: '5*, Турция из Астаны 8 ноября на 7 ночей, Ультра всё включено. Отель' }).meal, 5);
+assert.equal(tourInfo({ descr: '5*, Таиланд, Пхукет из Астаны 18 ноября на 14 ночей. Пхукет является…' }).meal, undefined);
 
 // приём туров и публикация в канал
 assert.equal((await post('/update', { items }, { 'x-secret': 'bad' })).status, 403);
@@ -51,7 +55,10 @@ const press = async label => {
 await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
 await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
-await press('5'); assert.match(sent.at(-1).text, /Выберите страну/);
+await press('5'); assert.match(sent.at(-1).text, /Питание/);
+assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text),
+  ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено']);
+await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
 const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
 assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
 assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
@@ -61,7 +68,7 @@ await press('Ближайшие 2 недели');
 const resultIds = [msgId - 1, msgId]; // фото тура и сообщение с кнопкой заявки
 
 // итог: запрос, подходящий тур (только 7 ночей в Таиланд), кнопка заявки менеджеру
-assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);

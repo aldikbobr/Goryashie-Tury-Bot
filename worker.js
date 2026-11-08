@@ -58,7 +58,7 @@ async function onUpdate(req, env) {
   return Response.json({ saved: data.items.length, posted: sent });
 }
 
-// ---------- Пошаговый подбор: взрослые → дети и их возраст → страна → ночи → период ----------
+// ---------- Пошаговый подбор: взрослые → дети и их возраст → питание → страна → ночи → период ----------
 // Выбор хранится прямо в кнопках: w:страна:взрослые:дети:возрасты:ночи:период (страна и период — номера в списках).
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -69,10 +69,27 @@ const DAY = 864e5;
 // "…из Астаны 18 ноября на 14 ночей…" → дата вылета и количество ночей
 export function tourInfo(t, now = new Date()) {
   const m = (t.descr || '').match(/(\d{1,2}) (января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря) на (\d+) ноч/);
-  if (!m) return {};
+  const meal = mealLevel(t.descr || '');
+  if (!m) return { meal };
   const mon = MONTHS.indexOf(m[2]);
   const year = now.getUTCFullYear() + (mon < now.getUTCMonth() - 1 ? 1 : 0); // январь при текущем ноябре — следующий год
-  return { date: new Date(Date.UTC(year, mon, +m[1])), nights: +m[3] };
+  return { date: new Date(Date.UTC(year, mon, +m[1])), nights: +m[3], meal };
+}
+
+// Питание как в поиске Tourvisor; номер = уровень (чем больше, тем лучше)
+const MEALS = ['Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено'];
+// "…на 14 ночей, Завтрак. …" → 1; не нашли — undefined (такой тур не отсекаем)
+function mealLevel(descr) {
+  const m = descr.match(/ноч\S*,\s*([^.]+)\./);
+  if (!m) return undefined;
+  const s = m[1].toLowerCase().replace(/ё/g, 'е');
+  if (s.includes('ультра')) return 5;
+  if (s.includes('все включено')) return 4;
+  if (s.includes('обед') || s.includes('полный')) return 3;
+  if (s.includes('ужин')) return 2;
+  if (s.includes('завтрак')) return 1;
+  if (s.includes('без питания')) return 0;
+  return undefined;
 }
 
 export function periods(now = new Date()) {
@@ -94,8 +111,8 @@ const COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', '
   'Марокко', 'Оман', 'Сейшелы', 'Сербия', 'Сингапур', 'Словения', 'Танзания', 'Тунис', 'Узбекистан', 'Франция',
   'Черногория', 'Чехия', 'Шри-Ланка', 'Южная Корея', 'Япония'];
 const countriesOf = () => COUNTRIES;
-const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p }; };
-const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p].join(':');
+const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f }; };
+const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f].join(':');
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
 const rows = (btns, per) => { const r = []; for (let i = 0; i < btns.length; i += per) r.push(btns.slice(i, i + per)); return r; };
 const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : 'детей');
@@ -103,6 +120,7 @@ const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : '
 function summary(w, data, now) {
   const lines = [];
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
+  if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
@@ -119,6 +137,10 @@ function step(w, data, now) {
     const btns = [0, ...Array.from({ length: 16 }, (_, i) => i + 2)].map(a => ({ text: a === 0 ? 'до 2' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
     return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: rows(btns, 6) };
   }
+  if (!w.f) return {
+    text: head + 'Питание (подберём это или лучше):',
+    kb: [[pick(w, 'f', { text: 'Любое', v: '*' })], ...rows(MEALS.map((m, i) => pick(w, 'f', { text: m, v: String(i) })), 2)],
+  };
   if (!w.c) {
     // 🔥 — по этой стране сейчас есть горящие туры
     const hot = new Set(data.items.map(t => t.country));
@@ -135,8 +157,9 @@ function matches(w, data, now) {
   const [, nMin, nMax] = NIGHTS[+w.n];
   const [, from, to] = periods(now)[+w.p];
   return data.items.filter(t => {
-    const { date, nights } = tourInfo(t, now);
-    return (!country || t.country === country) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to));
+    const { date, nights, meal } = tourInfo(t, now);
+    return (!country || t.country === country) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
+      && (w.f === '*' || meal === undefined || meal >= +w.f);
   }).sort((a, b) => a.price - b.price).slice(0, 5);
 }
 
