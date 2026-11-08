@@ -2,3 +2,4 @@
 node_modules
 .update-secret
 tours.json
+.admin-code

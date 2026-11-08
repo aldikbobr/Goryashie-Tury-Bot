@@ -1,7 +1,8 @@
 // Telegram-бот «Горящие туры».
 // POST /update  — сюда раз в день приходят туры из кабинета Tourvisor (заголовок X-Secret).
 // POST /tg      — сюда Telegram присылает сообщения клиентов.
-// Секреты (wrangler secret put): BOT_TOKEN, UPDATE_SECRET, TG_SECRET.
+// POST /check-search — проверка поиска Tourvisor с сервера бота (заголовок X-Secret).
+// Секреты (wrangler secret put): BOT_TOKEN, UPDATE_SECRET, TG_SECRET, ADMIN_CODE (код для «/admin <код>»).
 // Переменные (wrangler.jsonc): CHANNEL_ID, CONTACT_URL, POSTS_PER_UPDATE.
 
 const tg = (env, method, body) =>
@@ -123,22 +124,101 @@ const MEAL_IDS = [2, 3, 4, 5, 7, 9]; // RO, BB, HB, FB, AI, UAI — в том ж
 const RATINGS = [['⭐ Рейтинг 4,5 и выше', 5], ['⭐ Рейтинг 4,0 и выше', 4], ['⭐ Рейтинг 3,5 и выше', 3]];
 const ddmmyyyy = ms => new Date(ms).toISOString().slice(0, 10).split('-').reverse().join('.');
 
-export function searchLink(w, now, rating) {
+// даты и ночи для Tourvisor: вылеты с завтрашнего дня, не больше 21 дня (лимит Tourvisor)
+function range(w, now) {
   const [, nMin, nMax] = NIGHTS[+w.n];
   const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + DAY;
   let [, from, to] = periods(now)[+w.p];
   from = Math.max(from, tomorrow);
-  // Tourvisor ищет вылеты максимум в пределах 21 дня (1–21 число для месяца) — ставим это явно
   to = Math.min(to, from + 20 * DAY);
+  return { from: ddmmyyyy(from), to: ddmmyyyy(to), nMin: nMin || 3, nMax: nMax === 99 ? 21 : nMax };
+}
+
+// hotel — ссылка на конкретный отель, дату и ночи (как в ссылках самого Tourvisor)
+export function searchLink(w, now, rating, hotel) {
+  const r = range(w, now);
   const p = new URLSearchParams({
     ts_dosearch: 1, s_form_mode: 0, s_regular: 1, s_flyfrom: 59, s_currency: 3, // вылет из Астаны, цены в тенге
     s_country: COUNTRY_IDS[COUNTRIES[+w.c]], s_adults: w.a,
-    s_nights_from: nMin || 3, s_nights_to: nMax === 99 ? 21 : nMax,
-    s_j_date_from: ddmmyyyy(from), s_j_date_to: ddmmyyyy(to), s_rating: rating,
+    s_nights_from: hotel ? hotel.nights : r.nMin, s_nights_to: hotel ? hotel.nights : r.nMax,
+    s_j_date_from: hotel ? hotel.date : r.from, s_j_date_to: hotel ? hotel.date : r.to, s_rating: rating,
   });
+  if (hotel) p.set('x_hotel_codes', hotel.id);
   if (+w.k) { p.set('s_child', w.k); w.ages.forEach((a, i) => p.set(`s_child_age_${i + 1}`, a === '0' ? 1 : a)); }
   if (w.f !== '*') p.set('s_meal', MEAL_IDS[+w.f]); // Tourvisor ищет «и лучше»
   return 'https://tourvisor.ru/search.php?' + p;
+}
+
+// ---------- Поиск туров прямо через сайт Tourvisor (неофициально; при сбое бот переходит на ссылки) ----------
+const TV_HEADERS = { Referer: 'https://tourvisor.ru/search.php' };
+const GROUPS = [['4,5–5', 4.5, 99, 5], ['4–4,5', 4.0, 4.5, 4], ['3,7–4', 3.7, 4.0, 3]]; // название, от, до (не включая), s_rating для ссылки
+
+export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(r, ms))) {
+  const r = range(w, now);
+  const p = new URLSearchParams({
+    datefrom: r.from, dateto: r.to, nightsfrom: r.nMin, nightsto: r.nMax, adults: w.a, child: +w.k || 0,
+    meal: w.f === '*' ? 0 : MEAL_IDS[+w.f], rating: 3, // 3 = от 3,5; дальше делим на группы сами
+    country: COUNTRY_IDS[COUNTRIES[+w.c]], departure: 59, currency: 3,
+    directflight: 0, regular: 1, pricefrom: 0, priceto: 0, formmode: 0, origincountry: 3, pricetype: 0,
+  });
+  w.ages.forEach((a, i) => p.set(`childage${i + 1}`, a === '0' ? 1 : a));
+  const start = await fetch('https://tourvisor.ru/xml/modsearch.php?' + p, { headers: TV_HEADERS }).then(x => x.json());
+  const id = start?.result?.requestid;
+  if (!id) throw new Error('нет requestid: ' + JSON.stringify(start).slice(0, 100));
+  let data;
+  for (let i = 0; i < 6; i++) { // до ~18 секунд; обычно хватает 5
+    await wait(3000);
+    data = (await fetch('https://search3.tourvisor.ru/modresult.php?requestid=' + id, { headers: TV_HEADERS }).then(x => x.json())).data;
+    if (data?.status?.finished) break;
+  }
+  if (!data?.block || !data?.decode?.hotels) throw new Error('пустой ответ: ' + JSON.stringify(data?.status || data).slice(0, 100));
+  const best = new Map(); // у одного отеля несколько туроператоров — берём самую низкую цену
+  for (const h of data.block.flatMap(b => b.hotel || [])) {
+    const t = (h.tour || []).reduce((m, x) => (!m || x.pr < m.pr ? x : m), null);
+    if (t && (!best.has(h.id) || t.pr < best.get(h.id).price)) best.set(h.id, { id: h.id, price: t.pr, date: t.dt.split('-').reverse().join('.'), nights: t.nt, ml: t.ml });
+  }
+  return [...best.values()].map(h => {
+    const d = data.decode.hotels[h.id] || {};
+    return { ...h, name: d.name || 'Отель', rating: parseFloat(d.rating) || 0, stars: +d.stars || 0, region: d.region || '', meal: data.decode.meal?.[h.ml]?.nameshort || '' };
+  });
+}
+
+export function groupHotels(hotels) {
+  return GROUPS.map(([title, from, to, rating]) => ({
+    title, rating,
+    hotels: hotels.filter(h => h.rating >= from && h.rating < to).sort((a, b) => a.price - b.price).slice(0, 3),
+  }));
+}
+
+function groupMessage(w, now, g) {
+  const lines = g.hotels.map((h, i) =>
+    `${i + 1}. <b>${esc(h.name)}</b>${h.stars ? ' ' + h.stars + '*' : ''} · рейтинг <b>${String(h.rating).replace('.', ',')}</b>\n` +
+    `    ${esc(h.region)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)}\n    💰 <b>${money(h.price)}</b>`);
+  return {
+    text: `⭐ <b>Рейтинг ${g.title}</b>\n\n` + (lines.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
+    kb: [
+      ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]),
+      [{ text: 'Все варианты на Tourvisor', url: searchLink(w, now, g.rating) }],
+    ],
+  };
+}
+
+// подборки по рейтингу: результат поиска хранится 30 минут, чтобы не искать одно и то же повторно
+async function ratingSelections(env, w, now) {
+  const key = 'q:' + [w.a, w.k, w.ages.join('.'), w.f, w.c, w.n, w.p, range(w, now).from].join(':');
+  const cached = await env.TOURS.get(key);
+  if (cached) return JSON.parse(cached);
+  const hotels = await tvSearch(w, now);
+  await env.TOURS.put(key, JSON.stringify(hotels), { expirationTtl: 1800 });
+  return hotels;
+}
+
+// сообщение владельцу бота о сбое поиска — не чаще раза в 6 часов
+async function alertAdmin(env, text) {
+  const admin = await env.TOURS.get('admin');
+  if (!admin || (await env.TOURS.get('alerted'))) return;
+  await env.TOURS.put('alerted', '1', { expirationTtl: 6 * 3600 });
+  await tg(env, 'sendMessage', { chat_id: admin, text: '⚠️ ' + text });
 }
 const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f }; };
 const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f].join(':');
@@ -207,7 +287,7 @@ async function startWizard(env, chat_id, data, now) {
   if (r.ok) await remember(env, chat_id, [r.result.message_id]);
 }
 
-async function onTelegram(req, env) {
+async function onTelegram(req, env, ctx) {
   if (req.headers.get('x-telegram-bot-api-secret-token') !== env.TG_SECRET) return new Response('forbidden', { status: 403 });
   const u = await req.json();
   const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
@@ -223,37 +303,21 @@ async function onTelegram(req, env) {
       await tg(env, 'editMessageText', { chat_id, message_id, text: s.text, reply_markup: { inline_keyboard: s.kb } });
       return new Response('ok');
     }
-    // всё выбрано: итог + подборки по рейтингу (ссылки на Tourvisor) + горящие туры + заявка менеджеру
+    // всё выбрано: Telegram отвечаем сразу, а поиск (5–20 секунд) идёт после ответа
     const sum = summary(w, data, now);
     await tg(env, 'editMessageText', { chat_id, message_id, text: '✅ Ваш запрос:\n' + sum });
-    const ids = [];
-    if (w.c !== '*') {
-      const r = await tg(env, 'sendMessage', {
-        chat_id,
-        text: '⭐ Подборки по рейтингу отелей — туры всех туроператоров под ваш запрос, рейтинг указан у каждого отеля:',
-        reply_markup: { inline_keyboard: RATINGS.map(([text, rating]) => [{ text, url: searchLink(w, now, rating) }]) },
-      });
-      if (r.ok) ids.push(r.result.message_id);
-    }
-    const list = matches(w, data, now);
-    for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
-    const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
-    const r = await tg(env, 'sendMessage', {
-      chat_id,
-      text: (list.length
-        ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
-        : '🔥 Горящих туров по этим параметрам сейчас нет.')
-        + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
-        + '\n\nОтправьте запрос — менеджер подберёт лучший вариант. Новая подборка — кнопка «🔥 Подобрать тур» внизу.',
-      reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
-    });
-    if (r.ok) ids.push(r.result.message_id);
-    await remember(env, chat_id, ids);
+    ctx.waitUntil(results(env, w, now, chat_id, data, sum));
     return new Response('ok');
   }
 
   const chat_id = u.message?.chat?.id;
   if (!chat_id) return new Response('ok');
+  // владелец бота: «/admin <код>» — сюда будут приходить сообщения о сбоях поиска
+  if (env.ADMIN_CODE && u.message.text === '/admin ' + env.ADMIN_CODE) {
+    await env.TOURS.put('admin', String(chat_id));
+    await tg(env, 'sendMessage', { chat_id, text: 'Готово: сообщения о сбоях поиска Tourvisor будут приходить сюда.' });
+    return new Response('ok');
+  }
   if (u.message.text === MENU_BUTTON) {
     // нажатие кнопки тоже убираем вместе со старой подборкой
     await remember(env, chat_id, [u.message.message_id]);
@@ -270,18 +334,68 @@ async function onTelegram(req, env) {
   return new Response('ok');
 }
 
+// итог подбора: 3 подборки по рейтингу (поиск Tourvisor; при сбое — ссылки) + горящие туры + заявка менеджеру
+async function results(env, w, now, chat_id, data, sum) {
+  const ids = [];
+  const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
+  if (w.c !== '*') {
+    const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
+    let groups = null;
+    try {
+      groups = groupHotels(await ratingSelections(env, w, now));
+    } catch (e) {
+      await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
+    }
+    if (wait.ok) { await tg(env, 'deleteMessage', { chat_id, message_id: wait.result.message_id }); ids.pop(); }
+    if (groups) {
+      for (const g of groups) {
+        const m = groupMessage(w, now, g);
+        await send({ text: m.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: m.kb } });
+      }
+    } else {
+      // запасной вариант: ссылки на поиск Tourvisor с параметрами клиента
+      await send({
+        text: '⭐ Подборки по рейтингу отелей — туры всех туроператоров под ваш запрос, рейтинг указан у каждого отеля:',
+        reply_markup: { inline_keyboard: RATINGS.map(([text, rating]) => [{ text, url: searchLink(w, now, rating) }]) },
+      });
+    }
+  }
+  const list = matches(w, data, now);
+  for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
+  const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
+  await send({
+    text: (list.length
+      ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
+      : '🔥 Горящих туров по этим параметрам сейчас нет.')
+      + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
+      + '\n\nЦены меняются каждый час, наличие уточняйте у менеджера. Новая подборка — кнопка «🔥 Подобрать тур» внизу.',
+    reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
+  });
+  await remember(env, chat_id, ids);
+}
+
 // /update вызывается прямо со страницы кабинета Tourvisor, поэтому разрешаем запросы оттуда
 const CORS = { 'access-control-allow-origin': 'https://pro.tourvisor.ru', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type, x-secret' };
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const { pathname } = new URL(req.url);
     if (req.method === 'OPTIONS' && pathname === '/update') return new Response(null, { headers: CORS });
     if (req.method === 'POST' && pathname === '/update') {
       const r = await onUpdate(req, env);
       return new Response(r.body, { status: r.status, headers: { ...Object.fromEntries(r.headers), ...CORS } });
     }
-    if (req.method === 'POST' && pathname === '/tg') return onTelegram(req, env);
+    if (req.method === 'POST' && pathname === '/tg') return onTelegram(req, env, ctx);
+    // проверка поиска Tourvisor с сервера бота (Турция, 2 взрослых, ближайшие 2 недели, 6–9 ночей)
+    if (req.method === 'POST' && pathname === '/check-search') {
+      if (req.headers.get('x-secret') !== env.UPDATE_SECRET) return new Response('forbidden', { status: 403 });
+      try {
+        const hotels = await tvSearch({ a: '2', k: '0', ages: [], f: '*', c: '0', n: '1', p: '0' }, new Date());
+        return Response.json({ ok: true, hotels: hotels.length, groups: groupHotels(hotels).map(g => [g.title, g.hotels.length, g.hotels[0]?.name, g.hotels[0]?.rating]) });
+      } catch (e) {
+        return Response.json({ ok: false, error: String(e.message || e) });
+      }
+    }
     return new Response('Not found', { status: 404 });
   },
 };

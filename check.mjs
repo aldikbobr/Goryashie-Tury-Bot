@@ -1,14 +1,34 @@
-// Проверка бота без Telegram: node check.mjs
+// Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo } from './worker.js';
+import worker, { tourInfo, groupHotels } from './worker.js';
+
+// Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
+let tvMode = 'ok';
+const tvHotels = { 1: ['ALPHA RESORT', '4.8', 5], 2: ['BETA HOTEL', '4.2', 4], 3: ['GAMMA INN', '3.8', 3], 4: ['LOW HOTEL', '3.2', 3] };
+const tvResult = { data: {
+  status: { progress: 100, finished: 1 },
+  block: [{ hotel: [1, 2, 3, 4].map(id => ({ id, price: id * 100000, tour: [{ dt: '2026-12-06', nt: 7, pr: id * 100000, ml: 3 }, { dt: '2026-12-08', nt: 8, pr: id * 100000 + 5000, ml: 3 }] })) }],
+  decode: { hotels: Object.fromEntries(Object.entries(tvHotels).map(([id, [name, rating, stars]]) => [id, { name, rating, stars: String(stars), region: 'Пхукет' }])), meal: { 3: { nameshort: 'BB - Завтрак' } } },
+} };
+const tvCalls = [];
 
 const sent = [];
 let msgId = 100;
-globalThis.fetch = async (url, o) => { sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) }); return Response.json({ ok: true, result: { message_id: ++msgId } }); };
+globalThis.fetch = async (url, o) => {
+  if (url.includes('tourvisor.ru')) {
+    tvCalls.push(url);
+    if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
+    return Response.json(url.includes('modsearch') ? { result: { requestid: 1 } } : tvResult);
+  }
+  sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
+  return Response.json({ ok: true, result: { message_id: ++msgId } });
+};
 const kv = new Map();
-const env = { BOT_TOKEN: 't', UPDATE_SECRET: 's', TG_SECRET: 'g', CHANNEL_ID: '@ch', CONTACT_URL: 'https://wa.me/1', POSTS_PER_UPDATE: '2', TOUR_LINK: 'https://tourcart.ru/#tvofferid={id}',
+const env = { BOT_TOKEN: 't', UPDATE_SECRET: 's', TG_SECRET: 'g', ADMIN_CODE: 'abc', CHANNEL_ID: '@ch', CONTACT_URL: 'https://wa.me/1', POSTS_PER_UPDATE: '2', TOUR_LINK: 'https://tourcart.ru/#tvofferid={id}',
   TOURS: { get: async k => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async k => kv.delete(k) } };
-const post = (path, body, headers) => worker.fetch(new Request('https://x' + path, { method: 'POST', body: JSON.stringify(body), headers }), env);
+const pending = [];
+const ctx = { waitUntil: p => pending.push(p) };
+const post = async (path, body, headers) => { const r = await worker.fetch(new Request('https://x' + path, { method: 'POST', body: JSON.stringify(body), headers }), env, ctx); await Promise.all(pending.splice(0)); return r; };
 const TG = { 'x-telegram-bot-api-secret-token': 'g' };
 
 // даты вылета — через 5 дней от сегодня, чтобы попадать в «Ближайшие 2 недели»
@@ -18,7 +38,7 @@ const when = `${soon.getUTCDate()} ${MONTHS[soon.getUTCMonth()]}`;
 const t = (id, country, price, oldPrice, nights) => ({ id, country, price, oldPrice, title: 'Тур ' + id, descr: `5*, ${country} из Астаны ${when} на ${nights} ночей, Завтрак.`, discount: '', img: 'https://img/' + id + '.jpg' });
 const items = [t('1', 'Таиланд', 500000, 600000, 14), t('2', 'Таиланд', 300000, 600000, 7), t('3', 'ОАЭ', 400000, 410000, 7)];
 
-// разбор даты и ночей; январь при текущем ноябре — следующий год
+// разбор даты, ночей и питания; январь при текущем ноябре — следующий год
 const info = tourInfo({ descr: '5*, Таиланд из Астаны 9 января на 12 ночей, Завтрак.' }, new Date(Date.UTC(2026, 10, 8)));
 assert.equal(info.date.toISOString().slice(0, 10), '2027-01-09');
 assert.equal(info.nights, 12);
@@ -26,6 +46,10 @@ assert.equal(info.meal, 1); // Завтрак
 assert.equal(tourInfo({ descr: '5*, ОАЭ из Астаны 8 ноября на 10 ночей, Без питания. Отель' }).meal, 0);
 assert.equal(tourInfo({ descr: '5*, Турция из Астаны 8 ноября на 7 ночей, Ультра всё включено. Отель' }).meal, 5);
 assert.equal(tourInfo({ descr: '5*, Таиланд, Пхукет из Астаны 18 ноября на 14 ночей. Пхукет является…' }).meal, undefined);
+
+// группы рейтинга: 4,5–5 / 4–4,5 / 3,7–4; ниже 3,7 не показываем
+const g = groupHotels([{ rating: 4.5 }, { rating: 4.49 }, { rating: 4.0 }, { rating: 3.99 }, { rating: 3.7 }, { rating: 3.69 }].map((h, i) => ({ ...h, price: i })));
+assert.deepEqual(g.map(x => x.hotels.map(h => h.rating)), [[4.5], [4.49, 4.0], [3.99, 3.7]]);
 
 // приём туров и публикация в канал
 assert.equal((await post('/update', { items }, { 'x-secret': 'bad' })).status, 403);
@@ -36,13 +60,18 @@ sent.length = 0;
 r = await (await post('/update', { items }, { 'x-secret': 's' })).json();
 assert.equal(r.posted, 1); // уже опубликованные не повторяются
 
+// владелец бота регистрируется для сообщений о сбоях
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 99 }, message_id: 1, text: '/admin abc' } }, TG);
+assert.equal(kv.get('admin'), '99');
+
 // /start: постоянная кнопка внизу + первый шаг подбора
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
 assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔥 Подобрать тур' }]]);
 assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
 assert.match(sent[1].text, /Сколько взрослых/); // первым шагом — туристы
-const wizardId = msgId;
+let wizardId = msgId;
 
 // клиент проходит шаги, нажимая кнопки
 const press = async label => {
@@ -52,49 +81,82 @@ const press = async label => {
   await post('/tg', { callback_query: { id: 'q', data: btn.callback_data, message: { chat: { id: 7 }, message_id: wizardId } } }, TG);
   assert.ok(btn.callback_data.length <= 64);
 };
-await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
-await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
-assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
-await press('5'); assert.match(sent.at(-1).text, /Питание/);
-assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text),
-  ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено']);
-await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
-const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
-assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
-assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
-await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
-await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
-await press('Ближайшие 2 недели');
-const resultIds = [msgId - 2, msgId - 1, msgId]; // ссылки по рейтингу, фото тура, сообщение с кнопкой заявки
+const wizard = async () => {
+  await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
+  await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
+  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
+  await press('5'); assert.match(sent.at(-1).text, /Питание/);
+  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text),
+    ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено']);
+  await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
+  const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
+  assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
+  assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
+  await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
+  await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
+  await press('Ближайшие 2 недели');
+};
+await wizard();
 
-// итог: запрос, подходящий тур (только 7 ночей в Таиланд), кнопка заявки менеджеру
+// итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
 assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
-// подборки по рейтингу — ссылки на поиск Tourvisor с параметрами клиента
-const rating = sent[2].reply_markup.inline_keyboard.map(r => r[0]);
-assert.deepEqual(rating.map(b => b.text), ['⭐ Рейтинг 4,5 и выше', '⭐ Рейтинг 4,0 и выше', '⭐ Рейтинг 3,5 и выше']);
-const q = new URL(rating[0].url).searchParams;
-assert.equal(q.get('s_rating'), '5');
-assert.equal(q.get('s_country'), '2'); // Таиланд
-assert.equal(q.get('s_flyfrom'), '59'); // Астана
-assert.deepEqual([q.get('s_adults'), q.get('s_child'), q.get('s_child_age_1')], ['2', '1', '5']);
-assert.equal(q.get('s_meal'), '3'); // BB
-assert.deepEqual([q.get('s_nights_from'), q.get('s_nights_to')], ['6', '9']);
-assert.match(q.get('s_j_date_from'), /^\d\d\.\d\d\.\d{4}$/);
-const day = s => Date.UTC(...s.split('.').reverse().map((v, i) => (i === 1 ? v - 1 : +v)));
-assert.ok((day(q.get('s_j_date_to')) - day(q.get('s_j_date_from'))) / 864e5 <= 20); // лимит Tourvisor — 21 день
+assert.match(sent[2].text, /Ищу туры/);
+assert.equal(sent[3].method, 'deleteMessage');
+// в поиск Tourvisor ушли параметры клиента
+const sq = new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams;
+assert.deepEqual(['country', 'departure', 'adults', 'child', 'childage1', 'meal', 'nightsfrom', 'nightsto', 'currency'].map(k => sq.get(k)), ['2', '59', '2', '1', '5', '3', '6', '9', '3']);
+const groups = sent.slice(4, 7);
+assert.deepEqual(groups.map(m => m.text.match(/Рейтинг ([^<]+)</)[1]), ['4,5–5', '4–4,5', '3,7–4']);
+assert.match(groups[0].text, /ALPHA RESORT<\/b> 5\* · рейтинг <b>4,8<\/b>[\s\S]*Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак[\s\S]*100\s000 ₸/);
+assert.match(groups[1].text, /BETA HOTEL[\s\S]*рейтинг <b>4,2/);
+assert.match(groups[2].text, /GAMMA INN[\s\S]*рейтинг <b>3,8/);
+assert.ok(!sent.some(m => /LOW HOTEL/.test(m.text || ''))); // рейтинг 3,2 не показываем
+// кнопка отеля ведёт на этот отель, дату и ночи; последняя — все варианты группы
+const hb = new URL(groups[0].reply_markup.inline_keyboard[0][0].url).searchParams;
+assert.deepEqual([hb.get('x_hotel_codes'), hb.get('s_j_date_from'), hb.get('s_nights_from')], ['1', '06.12.2026', '7']);
+assert.equal(new URL(groups[0].reply_markup.inline_keyboard.at(-1)[0].url).searchParams.get('s_rating'), '5');
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
 assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nТуристы: 2 взр\./);
+const resultIds = [msgId - 4, msgId - 3, msgId - 2, msgId - 1, msgId]; // 3 подборки, фото тура, кнопка заявки
 
-// «Подобрать тур» удаляет старую подборку (шаги, туры, итог, само нажатие) и начинает заново
+// «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔥 Подобрать тур' } }, TG);
 assert.equal(sent[0].method, 'deleteMessages');
 assert.deepEqual(sent[0].message_ids.sort(), [wizardId, ...resultIds, 55].sort());
 assert.match(sent[1].text, /Сколько взрослых/);
 assert.equal(sent.length, 2); // без повторного приветствия
+wizardId = msgId;
 
-assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
-assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env)).status, 404);
+// тот же запрос повторно — берётся из сохранённого, Tourvisor не дёргаем
+tvCalls.length = 0;
+await wizard();
+assert.equal(tvCalls.length, 0);
+
+// Tourvisor заблокировал: клиенту — ссылки, владельцу — сообщение о сбое
+for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k); // убираем сохранённые результаты поиска
+tvMode = 'down';
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 7 }, message_id: 60, text: '🔥 Подобрать тур' } }, TG);
+wizardId = msgId;
+await wizard();
+const alert = sent.find(m => m.chat_id === '99');
+assert.match(alert.text, /Поиск Tourvisor не сработал/);
+const links = sent.find(m => /Подборки по рейтингу/.test(m.text || ''));
+assert.deepEqual(links.reply_markup.inline_keyboard.map(r => r[0].text), ['⭐ Рейтинг 4,5 и выше', '⭐ Рейтинг 4,0 и выше', '⭐ Рейтинг 3,5 и выше']);
+const lq = new URL(links.reply_markup.inline_keyboard[0][0].url).searchParams;
+assert.deepEqual(['s_rating', 's_country', 's_flyfrom', 's_adults', 's_child', 's_child_age_1', 's_meal'].map(k => lq.get(k)), ['5', '2', '59', '2', '1', '5', '3']);
+const day = s => Date.UTC(...s.split('.').reverse().map((v, i) => (i === 1 ? v - 1 : +v)));
+assert.ok((day(lq.get('s_j_date_to')) - day(lq.get('s_j_date_from'))) / 864e5 <= 20); // лимит Tourvisor — 21 день
+// второй сбой подряд — владельцу повторно не пишем (не чаще раза в 6 часов)
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 7 }, message_id: 61, text: '🔥 Подобрать тур' } }, TG);
+wizardId = msgId;
+await wizard();
+assert.ok(!sent.some(m => m.chat_id === '99'));
+
+assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env, ctx)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
+assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env, ctx)).status, 404);
 console.log('OK');
