@@ -65,10 +65,23 @@ assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥
 await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Сколько ночей/);
 await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
 await press('Ближайшие 2 недели');
-const resultIds = [msgId - 1, msgId]; // фото тура и сообщение с кнопкой заявки
+const resultIds = [msgId - 2, msgId - 1, msgId]; // ссылки по рейтингу, фото тура, сообщение с кнопкой заявки
 
 // итог: запрос, подходящий тур (только 7 ночей в Таиланд), кнопка заявки менеджеру
 assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+// подборки по рейтингу — ссылки на поиск Tourvisor с параметрами клиента
+const rating = sent[2].reply_markup.inline_keyboard.map(r => r[0]);
+assert.deepEqual(rating.map(b => b.text), ['⭐ Рейтинг 4,5 и выше', '⭐ Рейтинг 4,0 и выше', '⭐ Рейтинг 3,5 и выше']);
+const q = new URL(rating[0].url).searchParams;
+assert.equal(q.get('s_rating'), '5');
+assert.equal(q.get('s_country'), '2'); // Таиланд
+assert.equal(q.get('s_flyfrom'), '59'); // Астана
+assert.deepEqual([q.get('s_adults'), q.get('s_child'), q.get('s_child_age_1')], ['2', '1', '5']);
+assert.equal(q.get('s_meal'), '3'); // BB
+assert.deepEqual([q.get('s_nights_from'), q.get('s_nights_to')], ['6', '9']);
+assert.match(q.get('s_j_date_from'), /^\d\d\.\d\d\.\d{4}$/);
+const day = s => Date.UTC(...s.split('.').reverse().map((v, i) => (i === 1 ? v - 1 : +v)));
+assert.ok((day(q.get('s_j_date_to')) - day(q.get('s_j_date_from'))) / 864e5 <= 20); // лимит Tourvisor — 21 день
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);

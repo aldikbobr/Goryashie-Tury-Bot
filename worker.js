@@ -111,6 +111,35 @@ const COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', '
   'Марокко', 'Оман', 'Сейшелы', 'Сербия', 'Сингапур', 'Словения', 'Танзания', 'Тунис', 'Узбекистан', 'Франция',
   'Черногория', 'Чехия', 'Шри-Ланка', 'Южная Корея', 'Япония'];
 const countriesOf = () => COUNTRIES;
+
+// ---------- Ссылки на поиск Tourvisor с параметрами клиента (проверено 08.11.2026) ----------
+const COUNTRY_IDS = { Турция: 4, Египет: 1, Таиланд: 2, ОАЭ: 9, Россия: 47, Китай: 13, Вьетнам: 16, Австрия: 31, Азербайджан: 55,
+  Армения: 53, Бахрейн: 59, Беларусь: 57, Венгрия: 37, Греция: 6, Грузия: 54, Доминикана: 11, Индия: 3, Индонезия: 7, Испания: 14,
+  Италия: 24, Казахстан: 78, Катар: 79, Кипр: 15, Кыргызстан: 60, Маврикий: 27, Малайзия: 36, Мальдивы: 8, Марокко: 23, Оман: 64,
+  Сейшелы: 28, Сербия: 58, Сингапур: 25, Словения: 43, Танзания: 41, Тунис: 5, Узбекистан: 56, Франция: 32, Черногория: 21,
+  Чехия: 19, 'Шри-Ланка': 12, 'Южная Корея': 70, Япония: 49 };
+const MEAL_IDS = [2, 3, 4, 5, 7, 9]; // RO, BB, HB, FB, AI, UAI — в том же порядке, что MEALS
+// у Tourvisor фильтр рейтинга только «от»: s_rating 5 = 4,5+, 4 = 4,0+, 3 = 3,5+
+const RATINGS = [['⭐ Рейтинг 4,5 и выше', 5], ['⭐ Рейтинг 4,0 и выше', 4], ['⭐ Рейтинг 3,5 и выше', 3]];
+const ddmmyyyy = ms => new Date(ms).toISOString().slice(0, 10).split('-').reverse().join('.');
+
+export function searchLink(w, now, rating) {
+  const [, nMin, nMax] = NIGHTS[+w.n];
+  const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + DAY;
+  let [, from, to] = periods(now)[+w.p];
+  from = Math.max(from, tomorrow);
+  // Tourvisor ищет вылеты максимум в пределах 21 дня (1–21 число для месяца) — ставим это явно
+  to = Math.min(to, from + 20 * DAY);
+  const p = new URLSearchParams({
+    ts_dosearch: 1, s_form_mode: 0, s_regular: 1, s_flyfrom: 59, s_currency: 3, // вылет из Астаны, цены в тенге
+    s_country: COUNTRY_IDS[COUNTRIES[+w.c]], s_adults: w.a,
+    s_nights_from: nMin || 3, s_nights_to: nMax === 99 ? 21 : nMax,
+    s_j_date_from: ddmmyyyy(from), s_j_date_to: ddmmyyyy(to), s_rating: rating,
+  });
+  if (+w.k) { p.set('s_child', w.k); w.ages.forEach((a, i) => p.set(`s_child_age_${i + 1}`, a === '0' ? 1 : a)); }
+  if (w.f !== '*') p.set('s_meal', MEAL_IDS[+w.f]); // Tourvisor ищет «и лучше»
+  return 'https://tourvisor.ru/search.php?' + p;
+}
 const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f }; };
 const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f].join(':');
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
@@ -194,19 +223,28 @@ async function onTelegram(req, env) {
       await tg(env, 'editMessageText', { chat_id, message_id, text: s.text, reply_markup: { inline_keyboard: s.kb } });
       return new Response('ok');
     }
-    // всё выбрано: итог + подходящие горящие туры + заявка менеджеру
+    // всё выбрано: итог + подборки по рейтингу (ссылки на Tourvisor) + горящие туры + заявка менеджеру
     const sum = summary(w, data, now);
     await tg(env, 'editMessageText', { chat_id, message_id, text: '✅ Ваш запрос:\n' + sum });
     const ids = [];
+    if (w.c !== '*') {
+      const r = await tg(env, 'sendMessage', {
+        chat_id,
+        text: '⭐ Подборки по рейтингу отелей — туры всех туроператоров под ваш запрос, рейтинг указан у каждого отеля:',
+        reply_markup: { inline_keyboard: RATINGS.map(([text, rating]) => [{ text, url: searchLink(w, now, rating) }]) },
+      });
+      if (r.ok) ids.push(r.result.message_id);
+    }
     const list = matches(w, data, now);
     for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
     const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
     const r = await tg(env, 'sendMessage', {
       chat_id,
       text: (list.length
-        ? 'Цены указаны за размещение из подборки туроператора (обычно 2 взрослых). Точную цену на ваш состав посчитает менеджер.'
-        : 'Горящих туров по этим параметрам сейчас нет. Отправьте запрос — менеджер подберёт тур.')
-        + '\n\nНовая подборка — кнопка «🔥 Подобрать тур» внизу.',
+        ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
+        : '🔥 Горящих туров по этим параметрам сейчас нет.')
+        + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
+        + '\n\nОтправьте запрос — менеджер подберёт лучший вариант. Новая подборка — кнопка «🔥 Подобрать тур» внизу.',
       reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
     });
     if (r.ok) ids.push(r.result.message_id);
