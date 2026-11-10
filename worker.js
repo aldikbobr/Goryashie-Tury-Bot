@@ -421,6 +421,9 @@ async function results(env, w, now, chat_id, data, sum) {
   await remember(env, chat_id, ids);
 }
 
+// кнопка под постами канала, которая ведёт в бота на подбор тура
+const PICK_BUTTON = '🔎 Подбери тур сам за 1 минуту';
+
 // ---------- Канал: ежедневная подборка туров по всем направлениям ----------
 // 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей; топ-3 самых дешёвых в каждой группе рейтинга и звёздности
 const DIGEST_COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', 'Вьетнам', 'Китай'];
@@ -446,7 +449,7 @@ export async function channelDigest(env, now, search = tvSearch) {
     (await hotBlock(env, now));
   return {
     text,
-    kb: [[{ text: '🔥 Подобрать тур под себя', url: 'https://t.me/HotToursAstana_bot' }],
+    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
       ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересует тур из подборки дня в канале.')}` }]] : [])],
   };
 }
@@ -535,7 +538,7 @@ export async function channelWeather(env, now) {
     `\n\n${diff > 0 ? `☀️ Там на <b>${diff}°</b> теплее, чем в Астане. ` : ''}Сейчас разгар сезона — самое время улететь к морю!`;
   return {
     text,
-    kb: [[{ text: `🔥 Подобрать тур: ${country}`, url: 'https://t.me/HotToursAstana_bot' }],
+    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
       ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу тур: ${name}, ${country}.`)}` }]] : [])],
   };
 }
@@ -558,7 +561,7 @@ const CREATIVES = [
 export async function channelEvening(env, now) {
   const [scene, head, body, country] = CREATIVES[Math.floor(now.getTime() / DAY) % CREATIVES.length];
   const text = `🌅 <b>${head}</b>\n\n${body}\n\n🔥 Горящие туры из Астаны — в нашем боте. Цены меняются каждый день, наличие уточняйте у менеджера.\n\n<i>Иллюстрация создана нейросетью</i>`;
-  const kb = [[{ text: '🔥 Подобрать тур', url: 'https://t.me/HotToursAstana_bot' }],
+  const kb = [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
     ...(env.CONTACT_URL ? [[{ text: '📩 Хочу в отпуск — написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу в отпуск: ${country}.`)}` }]] : [])];
   let image = null;
   try {
