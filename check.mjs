@@ -216,9 +216,9 @@ assert.match(wr.text, /АСТАНА<\/b>\n━+\n {6}🌨 снег\n {6}днём 
 assert.match(wr.text, /🌤 малооблачно\n {6}днём <b>\+31°<\/b> · ночью \+25°\n {6}🌊 вода <b>\+30°<\/b>/);
 assert.match(wr.text, /Там на <b>35°<\/b> теплее, чем в Астане/);
 assert.equal(wr.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-assert.equal(wr.kb[0][0].text, '🔎 Подбери тур сам за 1 минуту'); // кнопка в погоде
+assert.equal(wr.kb[0][0].text, '🔎 Подобрать тур за одну минуту'); // кнопка в погоде
 assert.equal(d.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-for (const b of [d.kb[0][0]]) assert.equal(b.text, '🔎 Подбери тур сам за 1 минуту'); // кнопка в подборке дня
+for (const b of [d.kb[0][0]]) assert.equal(b.text, '🔎 Подобрать тур за одну минуту'); // кнопка в подборке дня
 await assert.rejects(channelDigest(env, new Date(), async () => { throw new Error('блок'); }), /ни одна страна не ответила/);
 
 // новости: только про туризм, без повторов, источник указан; второй раз — ничего нового
@@ -239,7 +239,7 @@ assert.ok(ev1.text !== ev2.text && aiPrompts[0] !== aiPrompts[1]); // креат
 assert.match(ev1.text, /^🌅 <b>[^<]+<\/b>\n\n[\s\S]*Иллюстрация создана нейросетью/);
 assert.ok(ev1.text.replace(/<[^>]+>/g, '').length < 1024); // лимит подписи к фото
 assert.equal(ev1.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-assert.equal(ev1.kb[0][0].text, '🔎 Подбери тур сам за 1 минуту'); // кнопка в вечернем посте
+assert.equal(ev1.kb[0][0].text, '🔎 Подобрать тур за одну минуту'); // кнопка в вечернем посте
 assert.match(decodeURIComponent(ev1.kb[1][0].url), /^https:\/\/wa\.me\/1\?text=Здравствуйте! Хочу в отпуск: /);
 sent.length = 0;
 const rr = await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
