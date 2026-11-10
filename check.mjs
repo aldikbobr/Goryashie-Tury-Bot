@@ -120,7 +120,7 @@ assert.deepEqual(groups.map(m => m.text.match(/(🟢|🟡|🟠) <b>РЕЙТИН�
 assert.match(groups[0].text, /^━+\n🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b>ALPHA RESORT<\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,8<\/b>\n {6}Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак\n {6}💰 <b>100\s000 ₸<\/b>/);
 assert.match(groups[1].text, /BETA HOTEL[\s\S]*⭐⭐⭐⭐  🟡 <b>4,2/);
 assert.match(groups[2].text, /GAMMA INN[\s\S]*⭐⭐⭐  🟠 <b>3,8/);
-assert.match(sent.at(-1).text, /В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код/);
+assert.match(sent.at(-1).text, /В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код\n⏱ <b>Стоимость актуальна на момент поиска<\/b>/);
 assert.ok(!sent.some(m => /LOW HOTEL/.test(m.text || ''))); // рейтинг 3,2 не показываем
 // кнопка отеля ведёт на этот отель, дату и ночи; последняя — все варианты группы
 const hb = new URL(groups[0].reply_markup.inline_keyboard[0][0].url).searchParams;
@@ -178,7 +178,7 @@ const fake = async w => [
 const failEgypt = async w => (w.c === '1' ? Promise.reject(new Error('нет ответа')) : fake(w)); // Египет не ответил — остальные страны есть
 const d = await channelDigest(env, new Date(), failEgypt);
 assert.match(d.text, /ПОДБОРКА ДНЯ/);
-assert.match(d.text, /👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n✅ <b>В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код/);
+assert.match(d.text, /👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n✅ <b>В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код\n⏱ <b>Стоимость актуальна на момент публикации<\/b>/);
 assert.equal((d.text.match(/<a href=/g) || []).length, 18); // 6 групп × 3 отеля
 // самый дешёвый из 4,5+ — Турция (+0)
 assert.match(d.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b><a href="[^"]+">TOP 0<\/a><\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,7<\/b>\n {6}Турция, Курорт/);

@@ -413,7 +413,8 @@ async function results(env, w, now, chat_id, data, sum) {
       : '🔥 Горящих туров по этим параметрам сейчас нет.')
       + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
       + '\n\n' + INCLUDED
-      + '\n\nЦены меняются каждый час, наличие уточняйте у менеджера. Новая подборка — кнопка «🔥 Подобрать тур» внизу.',
+      + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера'
+      + '\n\nНовая подборка — кнопка «🔥 Подобрать тур» внизу.',
     parse_mode: 'HTML',
     reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
@@ -438,10 +439,10 @@ export async function channelDigest(env, now, search = tvSearch) {
   const cheapest = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
   const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
   const text = `🌍 <b>ПОДБОРКА ДНЯ · ${date}</b>\n<i>Самые выгодные туры из Астаны по всем направлениям</i>\n\n` +
-    '👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n' + INCLUDED + '\n\n' +
+    '👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n' + INCLUDED +
+    '\n⏱ <b>Стоимость актуальна на момент публикации</b>, наличие уточняйте у менеджера\n\n' +
     groupHotels(hotels).map(g => block(ratingTitle(g), g.hotels)).join('\n\n') + '\n\n' +
-    STAR_GROUPS.map(([title, s]) => block(`🌟 <b>${title}</b>`, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n') +
-    '\n\n<i>Цены на момент публикации, наличие уточняйте у менеджера.</i>';
+    STAR_GROUPS.map(([title, s]) => block(`🌟 <b>${title}</b>`, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n');
   return {
     text,
     kb: [[{ text: '🔥 Подобрать тур под себя', url: 'https://t.me/HotToursAstana_bot' }],
