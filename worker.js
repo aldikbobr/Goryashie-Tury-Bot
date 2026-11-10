@@ -627,7 +627,10 @@ export default {
     // ручной запуск публикации в канал: /run?job=tours или /run?job=news (заголовок X-Secret)
     if (req.method === 'POST' && pathname === '/run') {
       if (req.headers.get('x-secret') !== env.UPDATE_SECRET) return new Response('forbidden', { status: 403 });
-      return Response.json(await runChannel(env, new URL(req.url).searchParams.get('job')));
+      const q = new URL(req.url).searchParams;
+      // to=admin — прислать пост только владельцу (предпросмотр), а не в канал
+      const target = q.get('to') === 'admin' ? { ...env, CHANNEL_ID: await env.TOURS.get('admin') } : env;
+      return Response.json(await runChannel(target, q.get('job')));
     }
     return new Response('Not found', { status: 404 });
   },

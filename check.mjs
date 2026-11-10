@@ -242,6 +242,10 @@ sent.length = 0;
 const rr = await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
 assert.deepEqual(await rr.json(), { ok: true });
 assert.deepEqual([sent[0].method, sent[0].upload, sent[0].chat_id, sent[0].size > 0], ['sendPhoto', true, '@ch', true]);
+// to=admin — предпросмотр только владельцу, не в канал
+sent.length = 0;
+await worker.fetch(new Request('https://x/run?job=evening&to=admin', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
+assert.deepEqual([sent[0].method, sent[0].chat_id], ['sendPhoto', '99']);
 sent.length = 0;
 kv.delete('alerted'); // ограничение «не чаще раза в 6 часов» в этой проверке уже сработало
 const noAi ={ ...env, AI: { run: async () => { throw new Error('лимит нейросети'); } } };
