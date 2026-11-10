@@ -540,6 +540,44 @@ export async function channelWeather(env, now) {
   };
 }
 
+// ---------- Канал: вечерний пост в 20:00 — картинка с отдыха + призыв ехать (креативы меняются каждый день) ----------
+// [что нарисовать (по-английски, нейросеть так понимает лучше), заголовок, текст, страна для WhatsApp]
+const CREATIVES = [
+  ['Phuket Thailand white sand beach, turquoise Andaman sea, limestone cliffs, longtail boats, golden hour', 'Ты это заслужил', 'Рабочий день позади. А где-то уже тёплое море и закат. Выбери тур сегодня — отпуск сам себя не купит.', 'Таиланд'],
+  ['Dubai skyline at sunset from a luxury beach, calm sea, palm trees, warm golden light', 'Сегодня — самый подходящий день', 'Не откладывай на потом: цены на туры меняются каждый день, а лучшие места разбирают первыми.', 'ОАЭ'],
+  ['Maldives overwater villas, crystal clear turquoise lagoon, white sand, sunset sky', 'Закрой ноутбук — открой море', 'Ты весь год работал. Пора отдохнуть так, чтобы было что вспомнить.', 'Мальдивы'],
+  ['Phu Quoc Vietnam tropical beach, hammock between palm trees, calm sea at sunset', 'Тепло — это просто', 'Пока в Астане холодно, во Вьетнаме +30 и тёплое море. Билеты в рай ближе, чем кажется.', 'Вьетнам'],
+  ['Sharm El Sheikh Egypt coral reef beach, clear blue Red Sea, sun umbrellas, evening light', 'Отпуск — не роскошь, а необходимость', 'Ты заслужил отдых. Напиши нам — подберём тур под твой бюджет за 5 минут.', 'Египет'],
+  ['Sanya Hainan China tropical beach resort, palm trees, turquoise sea, golden sunset', 'Вечер. Диван. Или море?', 'Хватит откладывать отпуск. Горящие туры из Астаны — в нашем боте, пока они есть.', 'Китай'],
+  ['Antalya Turkey Mediterranean coast, turquoise bay, pine trees, boats, golden hour', 'Мечтай сегодня — лети скоро', 'Самое лучшее время забронировать тур — сегодня. Завтра цена может быть другой.', 'Турция'],
+  ['Goa India palm beach at sunset, golden sand, calm Arabian sea, silhouette of palm trees', 'Ты так долго ждал этот отпуск', 'Позволь себе отдых без вины. Подберём тур, где будет солнце, море и ничего лишнего.', 'Индия'],
+  ['Bali Indonesia infinity pool overlooking rice terraces and ocean at sunset, tropical flowers', 'Тебе точно нужен отпуск', 'Усталость не лечится диваном. Лечится морем. Выбирай тур — мы всё организуем.', 'Индонезия'],
+  ['Hurghada Egypt resort beach with palm trees and calm sea, soft evening sky', 'Сегодня можно всё изменить', 'Один вечер — и ты выбрал тур. Через пару недель — уже на пляже. Напиши нам.', 'Египет'],
+];
+
+export async function channelEvening(env, now) {
+  const [scene, head, body, country] = CREATIVES[Math.floor(now.getTime() / DAY) % CREATIVES.length];
+  const text = `🌅 <b>${head}</b>\n\n${body}\n\n🔥 Горящие туры из Астаны — в нашем боте. Цены меняются каждый день, наличие уточняйте у менеджера.\n\n<i>Иллюстрация создана нейросетью</i>`;
+  const kb = [[{ text: '🔥 Подобрать тур', url: 'https://t.me/HotToursAstana_bot' }],
+    ...(env.CONTACT_URL ? [[{ text: '📩 Хочу в отпуск — написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу в отпуск: ${country}.`)}` }]] : [])];
+  let image = null;
+  try {
+    const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: `${scene}, photorealistic travel advertisement photo, vibrant colors, no text, no people faces`, steps: 4 });
+    if (r?.image) image = Uint8Array.from(atob(r.image), c => c.charCodeAt(0));
+  } catch (e) { await alertAdmin(env, `Вечерняя картинка не нарисовалась (${String(e.message || e).slice(0, 120)}), пост вышел без неё.`); }
+  return { text, kb, image };
+}
+
+async function postEvening(env, now) {
+  const { text, kb, image } = await channelEvening(env, now);
+  if (!image) return tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: kb } });
+  const f = new FormData(); // фото отправляется файлом
+  f.set('chat_id', env.CHANNEL_ID); f.set('caption', text); f.set('parse_mode', 'HTML');
+  f.set('reply_markup', JSON.stringify({ inline_keyboard: kb }));
+  f.set('photo', new Blob([image], { type: 'image/jpeg' }), 'rest.jpg');
+  return fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendPhoto`, { method: 'POST', body: f }).then(r => r.json());
+}
+
 async function runChannel(env, job, now = new Date()) {
   if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
   try {
@@ -549,12 +587,17 @@ async function runChannel(env, job, now = new Date()) {
       const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
       return { ok: r.ok, error: r.description };
     }
+    if (job === 'evening') {
+      const r = await postEvening(env, now);
+      if (!r.ok) throw new Error(r.description);
+      return { ok: true };
+    }
     const d = job === 'weather' ? await channelWeather(env, now) : await channelDigest(env, now);
     const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text: d.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: d.kb } });
     if (!r.ok) throw new Error(r.description);
     return { ok: true };
   } catch (e) {
-    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
+    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду', evening: 'вечерний пост' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
     return { ok: false, error: String(e.message || e) };
   }
 }
@@ -588,8 +631,8 @@ export default {
     }
     return new Response('Not found', { status: 404 });
   },
-  // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода
+  // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 20:00 — вечерний пост
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runChannel(env, { '0 9 * * *': 'news', '0 10 * * *': 'weather' }[event.cron] || 'tours'));
+    ctx.waitUntil(runChannel(env, { '0 9 * * *': 'news', '0 10 * * *': 'weather', '0 15 * * *': 'evening' }[event.cron] || 'tours'));
   },
 };

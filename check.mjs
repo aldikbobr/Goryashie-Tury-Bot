@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelWeather, resortOfDay } from './worker.js';
+import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -29,6 +29,11 @@ globalThis.fetch = async (url, o) => {
     if (url.includes('listdev')) return Response.json({ lists: { regions: { region: [
       { id: 6, name: 'Пхукет', parentid: 0 }, { id: 5, name: 'Паттайя', parentid: 0 }, { id: 600, name: 'Патонг', parentid: 6 }] } } });
     return Response.json(url.includes('modsearch') ? { result: { requestid: 1 } } : tvResult);
+  }
+  if (o.body instanceof FormData) { // фото файлом
+    const f = Object.fromEntries(o.body.entries());
+    sent.push({ method: url.split('/').pop(), upload: true, size: f.photo.size, caption: f.caption, chat_id: f.chat_id, reply_markup: JSON.parse(f.reply_markup) });
+    return Response.json({ ok: true, result: { message_id: ++msgId } });
   }
   sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
   return Response.json({ ok: true, result: { message_id: ++msgId } });
@@ -221,6 +226,28 @@ assert.match(n1, /Анапа получила статус курорта<\/a> �
 assert.ok(!/Курс тенге/.test(n1)); // не про туризм
 assert.equal((n1.match(/SCAT/g) || []).length, 1); // одинаковый заголовок из двух лент — один раз
 assert.equal(await channelNews(env), null);
+
+// вечерний пост: картинка от нейросети + призыв; каждый день другой креатив; без картинки — пост текстом
+const aiPrompts = [];
+const aiEnv = { ...env, AI: { run: async (model, o) => { aiPrompts.push(o.prompt); return { image: btoa('FAKEJPEG') }; } } };
+const ev1 = await channelEvening(aiEnv, new Date(Date.UTC(2026, 10, 10, 15)));
+const ev2 = await channelEvening(aiEnv, new Date(Date.UTC(2026, 10, 11, 15)));
+assert.equal(new TextDecoder().decode(ev1.image), 'FAKEJPEG');
+assert.ok(ev1.text !== ev2.text && aiPrompts[0] !== aiPrompts[1]); // креативы меняются
+assert.match(ev1.text, /^🌅 <b>[^<]+<\/b>\n\n[\s\S]*Иллюстрация создана нейросетью/);
+assert.ok(ev1.text.replace(/<[^>]+>/g, '').length < 1024); // лимит подписи к фото
+assert.equal(ev1.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
+assert.match(decodeURIComponent(ev1.kb[1][0].url), /^https:\/\/wa\.me\/1\?text=Здравствуйте! Хочу в отпуск: /);
+sent.length = 0;
+const rr = await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
+assert.deepEqual(await rr.json(), { ok: true });
+assert.deepEqual([sent[0].method, sent[0].upload, sent[0].chat_id, sent[0].size > 0], ['sendPhoto', true, '@ch', true]);
+sent.length = 0;
+kv.delete('alerted'); // ограничение «не чаще раза в 6 часов» в этой проверке уже сработало
+const noAi ={ ...env, AI: { run: async () => { throw new Error('лимит нейросети'); } } };
+await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), noAi, ctx);
+assert.equal(sent.find(m => m.chat_id === '@ch').method, 'sendMessage'); // пост вышел без картинки
+assert.match(sent.find(m => m.chat_id === '99').text, /Вечерняя картинка не нарисовалась/); // владельцу — сообщение
 
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env, ctx)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
 assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env, ctx)).status, 404);
