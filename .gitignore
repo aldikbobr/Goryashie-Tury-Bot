@@ -3,3 +3,7 @@ node_modules
 .update-secret
 tours.json
 .admin-code
+avatar/avatar-*.jpg
+!avatar/avatar-v8.jpg
+avatar/*.svg
+!avatar/hat-v8.svg
