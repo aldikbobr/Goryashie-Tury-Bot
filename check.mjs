@@ -240,7 +240,7 @@ assert.equal(ev1.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
 assert.match(decodeURIComponent(ev1.kb[1][0].url), /^https:\/\/wa\.me\/1\?text=Здравствуйте! Хочу в отпуск: /);
 sent.length = 0;
 const rr = await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
-assert.deepEqual(await rr.json(), { ok: true });
+assert.equal((await rr.json()).ok, true);
 assert.deepEqual([sent[0].method, sent[0].upload, sent[0].chat_id, sent[0].size > 0], ['sendPhoto', true, '@ch', true]);
 // to=admin — предпросмотр только владельцу, не в канал
 sent.length = 0;

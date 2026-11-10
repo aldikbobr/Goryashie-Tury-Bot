@@ -590,7 +590,7 @@ async function runChannel(env, job, now = new Date()) {
     if (job === 'evening') {
       const r = await postEvening(env, now);
       if (!r.ok) throw new Error(r.description);
-      return { ok: true };
+      return { ok: true, withPicture: Array.isArray(r.result?.photo) };
     }
     const d = job === 'weather' ? await channelWeather(env, now) : await channelDigest(env, now);
     const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text: d.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: d.kb } });
