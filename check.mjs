@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo, groupHotels } from './worker.js';
+import worker, { tourInfo, groupHotels, channelDigest, channelNews } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -14,7 +14,11 @@ const tvCalls = [];
 
 const sent = [];
 let msgId = 100;
+const rss = items => `<rss><channel><title>Лента</title>${items.map(([t, l]) => `<item><title><![CDATA[${t}]]></title><link>${l}</link></item>`).join('')}</channel></rss>`;
 globalThis.fetch = async (url, o) => {
+  if (url.includes('kursiv')) return new Response(rss([['SCAT возьмет в лизинг два Boeing', 'https://k/1'], ['Курс тенге вырос', 'https://k/2']]));
+  if (url.includes('inform.kz')) return new Response('down', { status: 500 });
+  if (url.includes('tourdom')) return new Response(rss([['Анапа получила статус курорта', 'https://t/1'], ['SCAT возьмет в лизинг два Boeing', 'https://t/dup']]));
   if (url.includes('tourvisor.ru')) {
     tvCalls.push(url);
     if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
@@ -162,6 +166,30 @@ await post('/tg', { message: { chat: { id: 7 }, message_id: 61, text: '🔥 По
 wizardId = msgId;
 await wizard();
 assert.ok(!sent.some(m => m.chat_id === '99'));
+
+// подборка дня для канала: все страны вместе, топ-3 самых дешёвых в группах рейтинга и звёздности
+const fake = async w => [
+  { id: 10 + +w.c, name: 'TOP ' + w.c, rating: 4.7, stars: 5, region: 'Курорт', price: 900000 + +w.c, date: '20.11.2026', nights: 7, meal: 'AI' },
+  { id: 20 + +w.c, name: 'MID ' + w.c, rating: 4.1, stars: 4, region: 'Курорт', price: 500000 + +w.c, date: '20.11.2026', nights: 7, meal: 'BB' },
+  { id: 30 + +w.c, name: 'LOW ' + w.c, rating: 3.8, stars: 3, region: 'Курорт', price: 300000 + +w.c, date: '20.11.2026', nights: 7, meal: 'RO' },
+];
+const failEgypt = async w => (w.c === '1' ? Promise.reject(new Error('нет ответа')) : fake(w)); // Египет не ответил — остальные страны есть
+const d = await channelDigest(env, new Date(), failEgypt);
+assert.match(d.text, /Подборка дня/);
+assert.equal((d.text.match(/<a href=/g) || []).length, 18); // 6 групп × 3 отеля
+assert.match(d.text, /⭐ 4,5–5<\/b>\n1\. <a href="[^"]+">TOP 0<\/a> 5★ · ⭐ 4,7\n    Турция, Курорт/); // самый дешёвый из 4,5+ — Турция (+0)
+assert.ok(!/Египет/.test(d.text));
+assert.match(d.text, /<b>5★<\/b>\n1\. [^\n]*TOP 0/);
+assert.equal(d.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
+await assert.rejects(channelDigest(env, new Date(), async () => { throw new Error('блок'); }), /ни одна страна не ответила/);
+
+// новости: только про туризм, без повторов, источник указан; второй раз — ничего нового
+const n1 = await channelNews(env);
+assert.match(n1, /SCAT возьмет в лизинг два Boeing<\/a> — Курсив/);
+assert.match(n1, /Анапа получила статус курорта<\/a> — TourDom/);
+assert.ok(!/Курс тенге/.test(n1)); // не про туризм
+assert.equal((n1.match(/SCAT/g) || []).length, 1); // одинаковый заголовок из двух лент — один раз
+assert.equal(await channelNews(env), null);
 
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env, ctx)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
 assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env, ctx)).status, 404);

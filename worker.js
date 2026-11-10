@@ -406,6 +406,79 @@ async function results(env, w, now, chat_id, data, sum) {
   await remember(env, chat_id, ids);
 }
 
+// ---------- Канал: ежедневная подборка туров по всем направлениям ----------
+// 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей; топ-3 самых дешёвых в каждой группе рейтинга и звёздности
+const DIGEST_COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', 'Вьетнам', 'Китай'];
+const STAR_GROUPS = [['5★', 5], ['4★', 4], ['3★', 3]];
+
+export async function channelDigest(env, now, search = tvSearch) {
+  const base = { a: '2', k: '0', ages: [], f: '*', r: '', n: '1', p: '0' };
+  const found = await Promise.allSettled(DIGEST_COUNTRIES.map(async name => {
+    const w = { ...base, c: String(COUNTRIES.indexOf(name)) };
+    return (await search(w, now)).map(h => ({ ...h, country: name, w }));
+  }));
+  const hotels = found.flatMap(x => (x.status === 'fulfilled' ? x.value : []));
+  if (!hotels.length) throw new Error('ни одна страна не ответила: ' + found.map(x => x.reason?.message).filter(Boolean)[0]);
+  const line = (h, i) => `${i + 1}. <a href="${searchLink(h.w, now, 0, h)}">${esc(h.name)}</a> ${h.stars ? h.stars + '★' : ''} · ⭐ ${String(h.rating).replace('.', ',')}\n` +
+    `    ${esc(h.country)}, ${esc(h.region)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)} · 💰 <b>${money(h.price)}</b>`;
+  const block = (title, list) => `<b>${title}</b>\n` + (list.length ? list.map(line).join('\n') : 'нет вариантов');
+  const cheapest = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
+  const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
+  const text = `🌍 <b>Подборка дня, ${date}</b>\nСамые выгодные туры из Астаны по всем направлениям: 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей.\n\n` +
+    '<b>По рейтингу отелей</b>\n\n' + groupHotels(hotels).map(g => block('⭐ ' + g.title, g.hotels)).join('\n\n') +
+    '\n\n<b>По звёздности</b>\n\n' + STAR_GROUPS.map(([title, s]) => block(title, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n') +
+    '\n\n<i>Цены на момент публикации, наличие уточняйте у менеджера.</i>';
+  return {
+    text,
+    kb: [[{ text: '🔥 Подобрать тур под себя', url: 'https://t.me/HotToursAstana_bot' }],
+      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересует тур из подборки дня в канале.')}` }]] : [])],
+  };
+}
+
+// ---------- Канал: новости туризма (заголовок + ссылка на источник) ----------
+const NEWS_FEEDS = [['Курсив', 'https://kz.kursiv.media/feed/'], ['Kazinform', 'https://www.inform.kz/rss/rus.xml'], ['TourDom', 'https://www.tourdom.ru/rss/']];
+const NEWS_WORDS = /туризм|турист|туроператор|турагент|авиакомпани|авиабилет|рейс|перел[её]т|аэропорт|виз[аыу]|безвиз|отел[ьи]|курорт|отдых|путешеств|Air Astana|FlyArystan|SCAT|чартер/i;
+const unxml = s => s.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&laquo;/g, '«').replace(/&raquo;/g, '»').replace(/&amp;/g, '&').trim();
+
+export async function channelNews(env) {
+  const posted = new Set(JSON.parse((await env.TOURS.get('news')) || '[]'));
+  const fresh = [];
+  for (const [source, url] of NEWS_FEEDS) { // сначала казахстанские источники
+    try {
+      const xml = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.text());
+      for (const item of xml.match(/<item[\s\S]*?<\/item>/g) || []) {
+        const title = unxml((item.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || '');
+        const link = unxml((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '');
+        if (title && link && NEWS_WORDS.test(title) && !posted.has(link) && !posted.has(title) && !fresh.some(n => n.title === title)) fresh.push({ title, link, source });
+      }
+    } catch { /* источник не ответил — берём из остальных */ }
+  }
+  const pick = fresh.slice(0, 5);
+  if (!pick.length) return null;
+  // ponytail: храним последние 600 ссылок и заголовков (одна новость бывает в двух лентах), чтобы не повторяться
+  await env.TOURS.put('news', JSON.stringify([...posted, ...pick.flatMap(n => [n.link, n.title])].slice(-600)));
+  return '📰 <b>Новости туризма</b>\n\n' + pick.map(n => `• <a href="${esc(n.link)}">${esc(n.title)}</a> — ${n.source}`).join('\n\n');
+}
+
+async function runChannel(env, job, now = new Date()) {
+  if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
+  try {
+    if (job === 'news') {
+      const text = await channelNews(env);
+      if (!text) return { ok: true, posted: 0 };
+      const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+      return { ok: r.ok, error: r.description };
+    }
+    const d = await channelDigest(env, now);
+    const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text: d.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: d.kb } });
+    if (!r.ok) throw new Error(r.description);
+    return { ok: true };
+  } catch (e) {
+    await alertAdmin(env, `Канал: не получилось опубликовать ${job === 'news' ? 'новости' : 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // /update вызывается прямо со страницы кабинета Tourvisor, поэтому разрешаем запросы оттуда
 const CORS = { 'access-control-allow-origin': 'https://pro.tourvisor.ru', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type, x-secret' };
 
@@ -428,6 +501,15 @@ export default {
         return Response.json({ ok: false, error: String(e.message || e) });
       }
     }
+    // ручной запуск публикации в канал: /run?job=tours или /run?job=news (заголовок X-Secret)
+    if (req.method === 'POST' && pathname === '/run') {
+      if (req.headers.get('x-secret') !== env.UPDATE_SECRET) return new Response('forbidden', { status: 403 });
+      return Response.json(await runChannel(env, new URL(req.url).searchParams.get('job')));
+    }
     return new Response('Not found', { status: 404 });
+  },
+  // расписание (wrangler.jsonc): 05:00 UTC = 10:00 Астана — подборка дня, 09:00 UTC = 14:00 — новости
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runChannel(env, event.cron === '0 9 * * *' ? 'news' : 'tours'));
   },
 };
