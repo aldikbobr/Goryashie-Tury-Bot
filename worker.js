@@ -205,17 +205,29 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
 
 export function groupHotels(hotels) {
   return GROUPS.map(([title, from, to, rating]) => ({
-    title, rating,
+    title, rating, from,
     hotels: hotels.filter(h => h.rating >= from && h.rating < to).sort((a, b) => a.price - b.price).slice(0, 3),
   }));
 }
 
+// ---------- Оформление подборок: «Цветные метки» (выбрал Аслан 10.11.2026) ----------
+// 🟢 рейтинг 4,5+ · 🟡 4–4,5 · 🟠 3,7–4; звёзды отеля — ⭐ по числу звёзд; группы разделены линиями
+const INCLUDED = '✅ <b>В стоимость включено:</b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код';
+const LINE = '━━━━━━━━━━━━━━━━';
+const NUM = ['1️⃣', '2️⃣', '3️⃣'];
+const badge = r => (r >= 4.5 ? '🟢' : r >= 4 ? '🟡' : '🟠');
+const groupHeader = title => `${LINE}\n${title}\n${LINE}`;
+const ratingTitle = g => `${badge(g.from)} <b>РЕЙТИНГ ${g.title}</b>`;
+function hotelCard(h, i, place, link) {
+  const name = link ? `<a href="${link}">${esc(h.name)}</a>` : esc(h.name);
+  return `${NUM[i]} <b>${name}</b>\n      ${'⭐'.repeat(h.stars || 0)}  ${badge(h.rating)} <b>${String(h.rating).replace('.', ',')}</b>\n` +
+    `      ${esc(place)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)}\n      💰 <b>${money(h.price)}</b>`;
+}
+
 function groupMessage(w, now, g) {
-  const lines = g.hotels.map((h, i) =>
-    `${i + 1}. <b>${esc(h.name)}</b>${h.stars ? ' ' + h.stars + '*' : ''} · рейтинг <b>${String(h.rating).replace('.', ',')}</b>\n` +
-    `    ${esc(h.region)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)}\n    💰 <b>${money(h.price)}</b>`);
+  const cards = g.hotels.map((h, i) => hotelCard(h, i, h.region));
   return {
-    text: `⭐ <b>Рейтинг ${g.title}</b>\n\n` + (lines.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
+    text: groupHeader(ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
     kb: [
       ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]),
       [{ text: 'Все варианты на Tourvisor', url: searchLink(w, now, g.rating) }],
@@ -400,7 +412,9 @@ async function results(env, w, now, chat_id, data, sum) {
       ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
       : '🔥 Горящих туров по этим параметрам сейчас нет.')
       + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
+      + '\n\n' + INCLUDED
       + '\n\nЦены меняются каждый час, наличие уточняйте у менеджера. Новая подборка — кнопка «🔥 Подобрать тур» внизу.',
+    parse_mode: 'HTML',
     reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
   await remember(env, chat_id, ids);
@@ -409,7 +423,7 @@ async function results(env, w, now, chat_id, data, sum) {
 // ---------- Канал: ежедневная подборка туров по всем направлениям ----------
 // 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей; топ-3 самых дешёвых в каждой группе рейтинга и звёздности
 const DIGEST_COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', 'Вьетнам', 'Китай'];
-const STAR_GROUPS = [['5★', 5], ['4★', 4], ['3★', 3]];
+const STAR_GROUPS = [['ПЯТЬ ЗВЁЗД', 5], ['ЧЕТЫРЕ ЗВЕЗДЫ', 4], ['ТРИ ЗВЕЗДЫ', 3]];
 
 export async function channelDigest(env, now, search = tvSearch) {
   const base = { a: '2', k: '0', ages: [], f: '*', r: '', n: '1', p: '0' };
@@ -419,14 +433,14 @@ export async function channelDigest(env, now, search = tvSearch) {
   }));
   const hotels = found.flatMap(x => (x.status === 'fulfilled' ? x.value : []));
   if (!hotels.length) throw new Error('ни одна страна не ответила: ' + found.map(x => x.reason?.message).filter(Boolean)[0]);
-  const line = (h, i) => `${i + 1}. <a href="${searchLink(h.w, now, 0, h)}">${esc(h.name)}</a> ${h.stars ? h.stars + '★' : ''} · ⭐ ${String(h.rating).replace('.', ',')}\n` +
-    `    ${esc(h.country)}, ${esc(h.region)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)} · 💰 <b>${money(h.price)}</b>`;
-  const block = (title, list) => `<b>${title}</b>\n` + (list.length ? list.map(line).join('\n') : 'нет вариантов');
+  const card = (h, i) => hotelCard(h, i, `${h.country}, ${h.region}`, searchLink(h.w, now, 0, h));
+  const block = (title, list) => groupHeader(title) + '\n' + (list.length ? list.map(card).join('\n') : 'нет вариантов');
   const cheapest = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
   const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
-  const text = `🌍 <b>Подборка дня, ${date}</b>\nСамые выгодные туры из Астаны по всем направлениям: 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей.\n\n` +
-    '<b>По рейтингу отелей</b>\n\n' + groupHotels(hotels).map(g => block('⭐ ' + g.title, g.hotels)).join('\n\n') +
-    '\n\n<b>По звёздности</b>\n\n' + STAR_GROUPS.map(([title, s]) => block(title, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n') +
+  const text = `🌍 <b>ПОДБОРКА ДНЯ · ${date}</b>\n<i>Самые выгодные туры из Астаны по всем направлениям</i>\n\n` +
+    '👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n' + INCLUDED + '\n\n' +
+    groupHotels(hotels).map(g => block(ratingTitle(g), g.hotels)).join('\n\n') + '\n\n' +
+    STAR_GROUPS.map(([title, s]) => block(`🌟 <b>${title}</b>`, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n') +
     '\n\n<i>Цены на момент публикации, наличие уточняйте у менеджера.</i>';
   return {
     text,

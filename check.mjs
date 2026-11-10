@@ -115,10 +115,12 @@ assert.equal(sent[3].method, 'deleteMessage');
 const sq = new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams;
 assert.deepEqual(['country', 'regions', 'departure', 'adults', 'child', 'childage1', 'meal', 'nightsfrom', 'nightsto', 'currency'].map(k => sq.get(k)), ['2', '6', '59', '2', '1', '5', '3', '6', '9', '3']);
 const groups = sent.slice(4, 7);
-assert.deepEqual(groups.map(m => m.text.match(/Рейтинг ([^<]+)</)[1]), ['4,5–5', '4–4,5', '3,7–4']);
-assert.match(groups[0].text, /ALPHA RESORT<\/b> 5\* · рейтинг <b>4,8<\/b>[\s\S]*Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак[\s\S]*100\s000 ₸/);
-assert.match(groups[1].text, /BETA HOTEL[\s\S]*рейтинг <b>4,2/);
-assert.match(groups[2].text, /GAMMA INN[\s\S]*рейтинг <b>3,8/);
+// оформление «Цветные метки»: линии, 🟢/🟡/🟠 по рейтингу, ⭐ по числу звёзд
+assert.deepEqual(groups.map(m => m.text.match(/(🟢|🟡|🟠) <b>РЕЙТИНГ ([^<]+)</).slice(1).join(' ')), ['🟢 4,5–5', '🟡 4–4,5', '🟠 3,7–4']);
+assert.match(groups[0].text, /^━+\n🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b>ALPHA RESORT<\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,8<\/b>\n {6}Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак\n {6}💰 <b>100\s000 ₸<\/b>/);
+assert.match(groups[1].text, /BETA HOTEL[\s\S]*⭐⭐⭐⭐  🟡 <b>4,2/);
+assert.match(groups[2].text, /GAMMA INN[\s\S]*⭐⭐⭐  🟠 <b>3,8/);
+assert.match(sent.at(-1).text, /В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код/);
 assert.ok(!sent.some(m => /LOW HOTEL/.test(m.text || ''))); // рейтинг 3,2 не показываем
 // кнопка отеля ведёт на этот отель, дату и ночи; последняя — все варианты группы
 const hb = new URL(groups[0].reply_markup.inline_keyboard[0][0].url).searchParams;
@@ -175,11 +177,14 @@ const fake = async w => [
 ];
 const failEgypt = async w => (w.c === '1' ? Promise.reject(new Error('нет ответа')) : fake(w)); // Египет не ответил — остальные страны есть
 const d = await channelDigest(env, new Date(), failEgypt);
-assert.match(d.text, /Подборка дня/);
+assert.match(d.text, /ПОДБОРКА ДНЯ/);
+assert.match(d.text, /👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n✅ <b>В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код/);
 assert.equal((d.text.match(/<a href=/g) || []).length, 18); // 6 групп × 3 отеля
-assert.match(d.text, /⭐ 4,5–5<\/b>\n1\. <a href="[^"]+">TOP 0<\/a> 5★ · ⭐ 4,7\n    Турция, Курорт/); // самый дешёвый из 4,5+ — Турция (+0)
+// самый дешёвый из 4,5+ — Турция (+0)
+assert.match(d.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b><a href="[^"]+">TOP 0<\/a><\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,7<\/b>\n {6}Турция, Курорт/);
 assert.ok(!/Египет/.test(d.text));
-assert.match(d.text, /<b>5★<\/b>\n1\. [^\n]*TOP 0/);
+assert.match(d.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n━+\n1️⃣ [^\n]*TOP 0/);
+assert.ok(d.text.replace(/<[^>]+>/g, '').length < 4096); // лимит длины сообщения Telegram
 assert.equal(d.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
 await assert.rejects(channelDigest(env, new Date(), async () => { throw new Error('блок'); }), /ни одна страна не ответила/);
 
