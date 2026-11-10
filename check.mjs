@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo, groupHotels, channelDigest, channelNews } from './worker.js';
+import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelWeather, resortOfDay } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -16,6 +16,10 @@ const sent = [];
 let msgId = 100;
 const rss = items => `<rss><channel><title>Лента</title>${items.map(([t, l]) => `<item><title><![CDATA[${t}]]></title><link>${l}</link></item>`).join('')}</channel></rss>`;
 globalThis.fetch = async (url, o) => {
+  if (url.includes('marine-api')) return Response.json({ current: { sea_surface_temperature: 29.6 } });
+  if (url.includes('open-meteo')) return Response.json({ daily: url.includes('latitude=51.17')
+    ? { temperature_2m_max: [-3.4], temperature_2m_min: [-10.2], weather_code: [73] }
+    : { temperature_2m_max: [31.2], temperature_2m_min: [25], weather_code: [1] } });
   if (url.includes('kursiv')) return new Response(rss([['SCAT возьмет в лизинг два Boeing', 'https://k/1'], ['Курс тенге вырос', 'https://k/2']]));
   if (url.includes('inform.kz')) return new Response('down', { status: 500 });
   if (url.includes('tourdom')) return new Response(rss([['Анапа получила статус курорта', 'https://t/1'], ['SCAT возьмет в лизинг два Boeing', 'https://t/dup']]));
@@ -179,12 +183,34 @@ const failEgypt = async w => (w.c === '1' ? Promise.reject(new Error('нет о�
 const d = await channelDigest(env, new Date(), failEgypt);
 assert.match(d.text, /ПОДБОРКА ДНЯ/);
 assert.match(d.text, /👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n✅ <b>В стоимость включено:<\/b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код\n⏱ <b>Стоимость актуальна на момент публикации<\/b>/);
-assert.equal((d.text.match(/<a href=/g) || []).length, 18); // 6 групп × 3 отеля
+assert.equal((d.text.match(/<a href=/g) || []).length, 21); // 6 групп × 3 отеля + 3 горящих
 // самый дешёвый из 4,5+ — Турция (+0)
 assert.match(d.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b><a href="[^"]+">TOP 0<\/a><\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,7<\/b>\n {6}Турция, Курорт/);
 assert.ok(!/Египет/.test(d.text));
 assert.match(d.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n━+\n1️⃣ [^\n]*TOP 0/);
 assert.ok(d.text.replace(/<[^>]+>/g, '').length < 4096); // лимит длины сообщения Telegram
+assert.match(d.text, /🔥 <b>ГОРЯЩИЕ<\/b>\n━+\n1️⃣ <b><a href="https:\/\/tourcart\.ru\/#tvofferid=2">Тур 2<\/a><\/b>/); // самая большая скидка (50%) первой
+
+// горящие в подборке: вылет не раньше чем через 2 дня; название отеля берётся из описания
+const day0 = new Date();
+const desc = (days, hotel) => { const x = new Date(Date.now() + days * 864e5); return `5*, ОАЭ из Астаны ${x.getUTCDate()} ${MONTHS[x.getUTCMonth()]} на 9 ночей, Завтрак. ${hotel} одно здание`; };
+const hotEnv = { TOUR_LINK: 'https://tourcart.ru/#tvofferid={id}', TOURS: { get: async () => JSON.stringify({ items: [
+  { id: 'a', country: 'ОАЭ', title: 'Завтра', descr: desc(1, 'TOMORROW HOTEL 5*'), price: 100, oldPrice: 1000, discount: '-90%' },
+  { id: 'b', country: 'ОАЭ', title: 'Скоро', descr: desc(3, 'W DUBAI THE PALM 5*'), price: 500, oldPrice: 1000, discount: '-50%' },
+] }) } };
+const hb2 = await hotBlock(hotEnv, day0);
+assert.ok(!/TOMORROW/.test(hb2)); // через 1 день — не берём
+assert.match(hb2, /1️⃣ <b><a href="https:\/\/tourcart\.ru\/#tvofferid=b">W DUBAI THE PALM 5\*<\/a><\/b>\n {6}ОАЭ · \d\d\.\d\d · 9 ноч\. · BB - Только завтрак\n {6}💰 <b>500 ₸<\/b> <s>1\s000 ₸<\/s> <b>-50%<\/b>/);
+
+// погода: Астана и курорт дня в сезоне, температура воды, на сколько теплее
+const nov = new Date(Date.UTC(2026, 10, 10, 10));
+assert.ok(['Пхукет', 'Шарм-эль-Шейх', 'Дубай', 'Фукуок', 'Санья (Хайнань)', 'Мальдивы', 'Гоа', 'Хургада'].includes(resortOfDay(nov)[0]));
+assert.ok(!['Анталья', 'Шри-Ланка'].includes(resortOfDay(nov)[0])); // в ноябре там не сезон
+const wr = await channelWeather(env, nov);
+assert.match(wr.text, /АСТАНА<\/b>\n━+\n {6}🌨 снег\n {6}днём <b>-3°<\/b> · ночью -10°/);
+assert.match(wr.text, /🌤 малооблачно\n {6}днём <b>\+31°<\/b> · ночью \+25°\n {6}🌊 вода <b>\+30°<\/b>/);
+assert.match(wr.text, /Там на <b>35°<\/b> теплее, чем в Астане/);
+assert.equal(wr.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
 assert.equal(d.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
 await assert.rejects(channelDigest(env, new Date(), async () => { throw new Error('блок'); }), /ни одна страна не ответила/);
 

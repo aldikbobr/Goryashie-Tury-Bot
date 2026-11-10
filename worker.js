@@ -442,12 +442,31 @@ export async function channelDigest(env, now, search = tvSearch) {
     '👥 2 взрослых · 📅 вылет в ближайшие 2 недели · 🌙 6–9 ночей\n' + INCLUDED +
     '\n⏱ <b>Стоимость актуальна на момент публикации</b>, наличие уточняйте у менеджера\n\n' +
     groupHotels(hotels).map(g => block(ratingTitle(g), g.hotels)).join('\n\n') + '\n\n' +
-    STAR_GROUPS.map(([title, s]) => block(`🌟 <b>${title}</b>`, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n');
+    STAR_GROUPS.map(([title, s]) => block(`🌟 <b>${title}</b>`, cheapest(hotels.filter(h => h.stars === s && h.rating >= 3.7)))).join('\n\n') +
+    (await hotBlock(env, now));
   return {
     text,
     kb: [[{ text: '🔥 Подобрать тур под себя', url: 'https://t.me/HotToursAstana_bot' }],
       ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересует тур из подборки дня в канале.')}` }]] : [])],
   };
+}
+
+// блок «Горящие» для подборки дня: туры из кабинета, вылет не раньше чем через 2 дня, топ-3 по скидке
+export async function hotBlock(env, now) {
+  const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
+  const soonest = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 2 * DAY;
+  const off = t => (t.oldPrice > t.price ? (t.oldPrice - t.price) / t.oldPrice : 0);
+  const list = data.items.filter(t => { const d = tourInfo(t, now).date; return d && d >= soonest; })
+    .sort((a, b) => off(b) - off(a)).slice(0, 3);
+  if (!list.length) return '';
+  const card = (t, i) => {
+    const { date, nights, meal } = tourInfo(t, now);
+    const hotel = (t.descr.match(/\.\s+([A-Z0-9][A-Z0-9 &'().,-]+?\s\d\*)/) || [])[1] || t.title;
+    const old = t.oldPrice > t.price ? ` <s>${money(t.oldPrice)}</s> <b>${esc(t.discount)}</b>` : '';
+    return `${NUM[i]} <b><a href="${env.TOUR_LINK.replace('{id}', t.id)}">${esc(hotel)}</a></b>\n` +
+      `      ${esc(t.country)} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
+  };
+  return '\n\n' + groupHeader('🔥 <b>ГОРЯЩИЕ</b>') + '\n' + list.map(card).join('\n');
 }
 
 // ---------- Канал: новости туризма (заголовок + ссылка на источник) ----------
@@ -475,6 +494,52 @@ export async function channelNews(env) {
   return '📰 <b>Новости туризма</b>\n\n' + pick.map(n => `• <a href="${esc(n.link)}">${esc(n.title)}</a> — ${n.source}`).join('\n\n');
 }
 
+// ---------- Канал: погода — Астана и курорт в разгаре сезона (Open-Meteo, бесплатно, без ключа) ----------
+// [курорт, страна для кнопки, широта, долгота, точка в море для температуры воды, месяцы сезона]
+const RESORTS = [
+  ['Пхукет', 'Таиланд', 7.88, 98.39, [7.85, 98.25], [11, 12, 1, 2, 3, 4]],
+  ['Шарм-эль-Шейх', 'Египет', 27.92, 34.33, [27.9, 34.4], [10, 11, 3, 4, 5]],
+  ['Дубай', 'ОАЭ', 25.2, 55.27, [25.25, 55.2], [11, 12, 1, 2, 3, 4]],
+  ['Фукуок', 'Вьетнам', 10.22, 103.96, [10.2, 103.9], [11, 12, 1, 2, 3, 4]],
+  ['Санья (Хайнань)', 'Китай', 18.25, 109.51, [18.2, 109.5], [11, 12, 1, 2, 3]],
+  ['Мальдивы', 'Мальдивы', 4.17, 73.51, [4.2, 73.45], [11, 12, 1, 2, 3, 4]],
+  ['Гоа', 'Индия', 15.49, 73.83, [15.5, 73.75], [11, 12, 1, 2, 3]],
+  ['Шри-Ланка', 'Шри-Ланка', 6.42, 80.0, [6.4, 79.95], [12, 1, 2, 3]],
+  ['Хургада', 'Египет', 27.26, 33.81, [27.25, 33.9], [4, 5, 6, 9, 10, 11]],
+  ['Анталья', 'Турция', 36.89, 30.71, [36.85, 30.7], [5, 6, 7, 8, 9, 10]],
+];
+const SKY = c => (c === 0 ? ['☀️', 'ясно'] : c <= 2 ? ['🌤', 'малооблачно'] : c === 3 ? ['☁️', 'облачно'] : c <= 48 ? ['🌫', 'туман']
+  : c <= 57 ? ['🌦', 'морось'] : c <= 67 ? ['🌧', 'дождь'] : c <= 77 ? ['🌨', 'снег'] : c <= 82 ? ['🌧', 'ливень'] : c <= 86 ? ['🌨', 'снегопад'] : ['⛈', 'гроза']);
+const deg = t => (t > 0 ? '+' : '') + Math.round(t) + '°';
+
+// курорт дня: по очереди среди тех, где сейчас сезон
+export function resortOfDay(now) {
+  const season = RESORTS.filter(r => r[5].includes(now.getUTCMonth() + 1));
+  return season[Math.floor(now.getTime() / DAY) % season.length];
+}
+
+export async function channelWeather(env, now) {
+  const day = async (lat, lon) => (await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=1`).then(r => r.json())).daily;
+  const [name, country, lat, lon, [sLat, sLon]] = resortOfDay(now);
+  const [ast, res, sea] = await Promise.all([day(51.17, 71.45), day(lat, lon),
+    fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${sLat}&longitude=${sLon}&current=sea_surface_temperature`).then(r => r.json()).then(j => j.current?.sea_surface_temperature).catch(() => null)]);
+  if (!ast?.temperature_2m_max || !res?.temperature_2m_max) throw new Error('нет данных о погоде');
+  const [aSky, aTxt] = SKY(ast.weather_code[0]);
+  const [rSky, rTxt] = SKY(res.weather_code[0]);
+  const diff = Math.round(res.temperature_2m_max[0] - ast.temperature_2m_max[0]);
+  const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
+  const text = `🌡 <b>ПОГОДА · ${date}</b>\n\n` +
+    `${groupHeader('🥶 <b>АСТАНА</b>')}\n      ${aSky} ${aTxt}\n      днём <b>${deg(ast.temperature_2m_max[0])}</b> · ночью ${deg(ast.temperature_2m_min[0])}\n\n` +
+    `${groupHeader(`🏖 <b>${name.toUpperCase()}</b> · ${country}`)}\n      ${rSky} ${rTxt}\n      днём <b>${deg(res.temperature_2m_max[0])}</b> · ночью ${deg(res.temperature_2m_min[0])}` +
+    (sea ? `\n      🌊 вода <b>${deg(sea)}</b>` : '') +
+    `\n\n${diff > 0 ? `☀️ Там на <b>${diff}°</b> теплее, чем в Астане. ` : ''}Сейчас разгар сезона — самое время улететь к морю!`;
+  return {
+    text,
+    kb: [[{ text: `🔥 Подобрать тур: ${country}`, url: 'https://t.me/HotToursAstana_bot' }],
+      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу тур: ${name}, ${country}.`)}` }]] : [])],
+  };
+}
+
 async function runChannel(env, job, now = new Date()) {
   if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
   try {
@@ -484,12 +549,12 @@ async function runChannel(env, job, now = new Date()) {
       const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
       return { ok: r.ok, error: r.description };
     }
-    const d = await channelDigest(env, now);
+    const d = job === 'weather' ? await channelWeather(env, now) : await channelDigest(env, now);
     const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text: d.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: d.kb } });
     if (!r.ok) throw new Error(r.description);
     return { ok: true };
   } catch (e) {
-    await alertAdmin(env, `Канал: не получилось опубликовать ${job === 'news' ? 'новости' : 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
+    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
     return { ok: false, error: String(e.message || e) };
   }
 }
@@ -523,8 +588,8 @@ export default {
     }
     return new Response('Not found', { status: 404 });
   },
-  // расписание (wrangler.jsonc): 05:00 UTC = 10:00 Астана — подборка дня, 09:00 UTC = 14:00 — новости
+  // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runChannel(env, event.cron === '0 9 * * *' ? 'news' : 'tours'));
+    ctx.waitUntil(runChannel(env, { '0 9 * * *': 'news', '0 10 * * *': 'weather' }[event.cron] || 'tours'));
   },
 };
