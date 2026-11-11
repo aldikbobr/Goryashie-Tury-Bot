@@ -25,7 +25,7 @@ function caption(t, updated) {
 }
 
 function buttons(env, t) {
-  const row = [{ text: 'Посмотреть тур', url: env.TOUR_LINK.replace('{id}', t.id) }];
+  const row = [{ text: 'Посмотреть тур', url: t.link || env.TOUR_LINK.replace('{id}', t.id) }];
   // в WhatsApp сразу подставляется название тура, чтобы менеджер понял, о чём речь
   if (env.CONTACT_URL) row.push({ text: 'Забронировать', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу забронировать тур: ${t.title}`)}` });
   return { inline_keyboard: [row] };
@@ -480,6 +480,49 @@ export async function channelDigest(env, now, search = tvSearch) {
   };
 }
 
+// ---------- Горящие туры с открытой страницы Tourvisor (без входа в кабинет и без компьютера) ----------
+// https://tourvisor.ru/goryashchie-tury?departure=<город> — страница отдаёт карточки прямо в HTML: отель, рейтинг, скидка, цена в тенге, дата, ночи, питание.
+// Номера тура (tvofferid) там нет, поэтому ссылка ведёт на поиск Tourvisor по этому отелю и дате.
+export function parseHot(html, dep) {
+  const g = (c, re) => unxml(re.exec(c)?.[1] || '');
+  const num = x => Number(x.replace(/\D/g, '')) || 0;
+  const seen = new Set(), items = [];
+  for (const c of html.match(/<a href="[^"]+" class="trv-hot-tours-2__item"[\s\S]*?<\/a>/g) || []) {
+    const link = g(c, /href="([^"]+)"/);
+    const q = new URL(link).searchParams;
+    const [dd, mm] = (q.get('s_j_date_from') || '').split('.');
+    const name = g(c, /item-name">\s*([^<]+?)\s*</), loc = g(c, /item-location">([^<]+)</), opt = g(c, /item-options">([^<]+)</).split(', ');
+    const price = num(g(c, /item-price">\s*([\d\s]+)</));
+    const sm = name.match(/^(\d)\*\s*(.+)$/), [country, ...region] = loc.split(', ');
+    const id = `p${q.get('x_hotel_codes')}-${q.get('s_j_date_from')}-${q.get('s_nights_from')}-${q.get('s_meal')}`;
+    if (!price || !mm || !name || !country || seen.has(id)) continue;
+    seen.add(id);
+    const rating = parseFloat(g(c, /item-score"[^>]*>([\d.]+)</)) || 0, meal = opt.slice(2, -1).join(', ');
+    items.push({
+      id, dep, country, link, rating, price, stars: sm ? +sm[1] : 0, title: sm ? sm[2] : name,
+      oldPrice: num(g(c, /item-old-price">\s*([\d\s]+)</)), discount: g(c, /item-percent">([^<]+)</),
+      img: g(c, /url\('([^']+)'\)/),
+      // описание в том же виде, что у туров из кабинета: по нему бот находит дату, ночи и питание
+      descr: `${sm ? sm[1] + '*, ' : ''}${[country, ...region].join(', ')}. Вылет: ${dep}, ${+dd} ${MONTHS[mm - 1]} на ${q.get('s_nights_from')} ночей, ${meal}. Рейтинг отеля ${rating.toFixed(1).replace('.', ',')}.`,
+    });
+  }
+  return items;
+}
+
+// обходит все города вылета; город, который не ответил, сохраняет прежние туры
+export async function scrapeHot(env) {
+  const old = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}').items;
+  const got = await Promise.allSettled(DEPARTURES.map(async ([name, id]) => {
+    const html = await fetch(`https://tourvisor.ru/goryashchie-tury?departure=${id}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.text());
+    if (!html.includes('trv-hot-tours-2')) throw new Error(name + ': страница без блока горящих туров');
+    return parseHot(html, name);
+  }));
+  const items = got.flatMap((r, i) => (r.status === 'fulfilled' ? r.value : old.filter(t => depOf(t) === DEPARTURES[i][0])));
+  if (!got.some(r => r.status === 'fulfilled' && r.value.length)) throw new Error(got.find(r => r.status === 'rejected')?.reason?.message || 'горящих туров нет ни в одном городе');
+  await env.TOURS.put('tours', JSON.stringify({ updated: new Date().toISOString(), items }));
+  return { saved: items.length, failed: got.filter(r => r.status === 'rejected').length };
+}
+
 // блок «Горящие» для канала: туры из кабинета всех городов, вылет не раньше чем через 2 дня, лучшие по скидке (не больше perCity с города)
 export async function hotBlock(env, now, limit = 3, perCity = 99) {
   const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
@@ -494,8 +537,8 @@ export async function hotBlock(env, now, limit = 3, perCity = 99) {
     const { date, nights, meal } = tourInfo(t, now);
     const hotel = (t.descr.match(/\.\s+([A-Z0-9][A-Z0-9 &'().,-]+?\s\d\*)/) || [])[1] || t.title;
     const old = t.oldPrice > t.price ? ` <s>${money(t.oldPrice)}</s> <b>${esc(t.discount)}</b>` : '';
-    return `${NUM[i]} <b><a href="${env.TOUR_LINK.replace('{id}', t.id)}">${esc(hotel)}</a></b>\n` +
-      `      ${esc(t.country)} · вылет ${esc(depOf(t))} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
+    return `${NUM[i]} <b><a href="${t.link || env.TOUR_LINK.replace('{id}', t.id)}">${esc(hotel)}${t.stars ? ' ' + t.stars + '*' : ''}</a></b>\n` +
+      `      ${esc(t.country)} · вылет ${esc(depOf(t))} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}${t.rating ? ' · ' + badge(t.rating) + ' ' + String(t.rating).replace('.', ',') : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
   };
   return '\n\n' + groupHeader('🔥 <b>ГОРЯЩИЕ</b>') + '\n' + list.map(card).join('\n');
 }
@@ -631,6 +674,7 @@ async function runChannel(env, job, now = new Date()) {
       const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }]] } });
       return { ok: r.ok, error: r.description };
     }
+    if (job === 'scrape') return { ok: true, ...(await scrapeHot(env)) };
     if (job === 'evening') {
       const r = await postEvening(env, now);
       if (!r.ok) throw new Error(r.description);
@@ -645,7 +689,7 @@ async function runChannel(env, job, now = new Date()) {
     if (!r.ok) throw new Error(r.description);
     return { ok: true };
   } catch (e) {
-    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду', evening: 'вечерний пост', hot: 'горящие туры' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
+    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду', evening: 'вечерний пост', hot: 'горящие туры', scrape: 'обновить горящие туры' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
     return { ok: false, error: String(e.message || e) };
   }
 }
@@ -684,7 +728,8 @@ export default {
   },
   // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
-    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['weather'], '0 14 * * *': ['evening', 'hot'] }[event.cron] || ['tours'];
+    // горящие туры обновляются с открытой страницы Tourvisor перед постами и днём
+    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'] }[event.cron] || ['scrape', 'tours'];
     ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };

@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { matches, tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -11,6 +11,14 @@ const tvResult = { data: {
   decode: { hotels: Object.fromEntries(Object.entries(tvHotels).map(([id, [name, rating, stars]]) => [id, { name, rating, stars: String(stars), region: 'Пхукет' }])), meal: { 3: { nameshort: 'BB - Завтрак' } } },
 } };
 const tvCalls = [];
+// карточки открытой страницы горящих туров (как у Tourvisor): со скидкой, она же повторно (в другой вкладке страницы), без скидки и без звёзд
+const hotCard = ({ code, date, nights, meal, disc = '', price, name, loc, opt }) => `<a href="https://tourvisor.ru/search.php?ts_dosearch=1&amp;s_form_mode=0&amp;s_nights_from=${nights}&amp;s_nights_to=${nights}&amp;s_regular=1&amp;x_hotel_codes=${code}&amp;s_j_date_from=${date}&amp;s_j_date_to=${date}&amp;s_adults=2&amp;s_flyfrom=59&amp;s_country=13&amp;s_currency=3&amp;s_meal=${meal}" class="trv-hot-tours-2__item" target="_blank" onclick="x">
+  <div class="trv-hot-tours-2__item-img" style="background-image: url('https://static.tourvisor.ru/hotel_pics/main400/${code}.jpg')"><span class="trv-hot-tours-2__item-rating"><span class="trv-hot-tours-2__item-score" title="Рейтинг">4.0</span></span></div>
+  <div class="trv-hot-tours-2__item-body">${disc}<div class="trv-hot-tours-2__item-price">${price} <div class="trv-currency">KZT</div></div><div class="trv-hot-tours-2__item-name">${name} </div>
+  <div class="trv-hot-tours-2__item-location">${loc}</div><div class="trv-hot-tours-2__item-options">${opt}</div></div></a>`;
+const sale = '<div class="trv-hot-tours-2__item-discount"><div class="trv-hot-tours-2__item-percent">-28%</div><div class="trv-hot-tours-2__item-old-price">654 857 <div class="trv-currency">KZT</div></div></div>';
+const c1 = { code: 3117, date: '12.11.2026', nights: 6, meal: 3, disc: sale, price: '471 497', name: '4* Sanya Yuhai &amp; Spa', loc: 'Китай, Хайнань', opt: '12 ноя, 6 нч, Завтрак, 2 взр.' };
+const HOT_HTML = '<div class="trv-hot-tours-2-sections">' + hotCard(c1) + hotCard(c1) + hotCard({ code: 555, date: '20.12.2026', nights: 9, meal: 7, price: '300 000', name: 'Apartments Palm', loc: 'ОАЭ', opt: '20 дек, 9 нч, Все Включено, 2 взр.' }) + '</div>';
 
 const sent = [];
 let msgId = 100;
@@ -23,6 +31,10 @@ globalThis.fetch = async (url, o) => {
   if (url.includes('kursiv')) return new Response(rss([['SCAT возьмет в лизинг два Boeing', 'https://k/1'], ['Курс тенге вырос', 'https://k/2']]));
   if (url.includes('inform.kz')) return new Response('down', { status: 500 });
   if (url.includes('tourdom')) return new Response(rss([['Анапа получила статус курорта', 'https://t/1'], ['SCAT возьмет в лизинг два Boeing', 'https://t/dup']]));
+  if (url.includes('goryashchie-tury')) { // открытая страница горящих туров: по два одинаковых и разных тура, у Атырау страница не открылась
+    if (url.includes('departure=75')) return new Response('Forbidden', { status: 403 });
+    return new Response(HOT_HTML);
+  }
   if (url.includes('tourvisor.ru')) {
     tvCalls.push(url);
     if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
@@ -307,6 +319,27 @@ const noAi ={ ...env, AI: { run: async () => { throw new Error('лимит не�
 await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), noAi, ctx);
 assert.equal(sent.find(m => m.chat_id === '@ch').method, 'sendMessage'); // пост вышел без картинки
 assert.match(sent.find(m => m.chat_id === '99').text, /Вечерняя картинка не нарисовалась/); // владельцу — сообщение
+
+// горящие туры с открытой страницы Tourvisor: разбор карточек, повтор отбрасывается
+const ph = parseHot(HOT_HTML, 'Астана');
+assert.equal(ph.length, 2);
+assert.deepEqual([ph[0].id, ph[0].title, ph[0].stars, ph[0].country, ph[0].price, ph[0].oldPrice, ph[0].discount, ph[0].rating], ['p3117-12.11.2026-6-3', 'Sanya Yuhai & Spa', 4, 'Китай', 471497, 654857, '-28%', 4]);
+assert.match(ph[0].link, /^https:\/\/tourvisor\.ru\/search\.php\?.*x_hotel_codes=3117.*s_flyfrom=59.*s_currency=3/); // ссылка на поиск этого отеля
+assert.equal(ph[0].img, 'https://static.tourvisor.ru/hotel_pics/main400/3117.jpg');
+const pi = tourInfo(ph[0], new Date(Date.UTC(2026, 10, 11)));
+assert.deepEqual([pi.date.toISOString().slice(0, 10), pi.nights, pi.meal], ['2026-11-12', 6, 1]); // бот находит дату, ночи, питание в описании
+assert.deepEqual([ph[1].stars, ph[1].oldPrice, ph[1].discount, ph[1].country, tourInfo(ph[1]).meal], [0, 0, '', 'ОАЭ', 4]); // без звёзд и без скидки
+// обход городов: Атырау не открылся — остаются прежние туры города (их нет), остальные 13 обновились
+kv.set('tours', JSON.stringify({ items: [{ ...ph[0], id: 'old', dep: 'Атырау' }] }));
+const sr = await scrapeHot(env);
+assert.deepEqual(sr, { saved: 2 * 13 + 1, failed: 1 });
+const stored = JSON.parse(kv.get('tours')).items;
+assert.equal(stored.filter(x => x.dep === 'Атырау').length, 1); // сохранились
+assert.equal(stored.filter(x => x.dep === 'Алматы').length, 2);
+// через /run и по расписанию (cron 14:00 UTC — сначала обновление туров, потом пост)
+sent.length = 0;
+const rs = await (await worker.fetch(new Request('https://x/run?job=scrape', { method: 'POST', headers: { 'x-secret': 's' } }), env, ctx)).json();
+assert.equal(rs.ok, true); assert.equal(sent.length, 0); // в канал ничего не публикуется
 
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env, ctx)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
 assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env, ctx)).status, 404);
