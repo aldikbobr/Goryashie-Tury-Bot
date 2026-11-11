@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { matches, tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -75,6 +75,17 @@ assert.deepEqual(sent.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2', '�
 sent.length = 0;
 r = await (await post('/update', { items }, { 'x-secret': 's' })).json();
 assert.equal(r.posted, 1); // уже опубликованные не повторяются
+// туры с городами: сбор по городам заменяет всё, в канал по одному — только Астана; старая сборка без города обновляет только Астану
+const tc = (id, dep) => ({ ...t(id, 'ОАЭ', 399000, 400000, 7), dep, descr: `4*, ОАЭ из ${dep} ${when} на 7 ночей, Завтрак.` });
+r = await (await post('/update', { updated: '2026-11-11T04:00:00Z', items: [tc('21', 'Алматы'), tc('22', 'Алматы'), tc('23', 'Шымкент')] }, { 'x-secret': 's' })).json();
+assert.deepEqual(r, { saved: 3, posted: 0 });
+assert.deepEqual(JSON.parse(kv.get('tours')).items.map(x => x.dep), ['Алматы', 'Алматы', 'Шымкент']);
+r = await (await post('/update', { updated: '2026-11-11T05:00:00Z', items }, { 'x-secret': 's' })).json(); // без dep = Астана
+assert.equal(r.saved, 6); // Алматы и Шымкент остались, Астана добавилась
+assert.deepEqual(JSON.parse(kv.get('tours')).items.map(x => x.dep), ['Алматы', 'Алматы', 'Шымкент', 'Астана', 'Астана', 'Астана']);
+// бот: горящие только выбранного аэропорта
+assert.deepEqual(matches({ d: '2', c: '*', f: '*', n: '3', p: '5', r: '' }, JSON.parse(kv.get('tours')), new Date()).map(x => x.id), ['21', '22']);
+sent.length = 0;
 
 // владелец бота регистрируется для сообщений о сбоях
 sent.length = 0;
@@ -193,7 +204,7 @@ await wizard('Петропавловск');
 assert.match(sent[1].text, /Вылет: Петропавловск/);
 assert.equal(new URL(sent.find(m => /Подборки по рейтингу/.test(m.text || '')).reply_markup.inline_keyboard[0][0].url).searchParams.get('s_flyfrom'), '98');
 assert.ok(!sent.some(m => m.method === 'sendPhoto'));
-assert.match(sent.at(-1).text, /только с вылетом из Астаны/);
+assert.match(sent.at(-1).text, /Горящих туров по этим параметрам сейчас нет/);
 tvMode = 'ok'; tvCalls.length = 0;
 for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k);
 sent.length = 0;
@@ -229,10 +240,21 @@ const hotEnv = { TOUR_LINK: 'https://tourcart.ru/#tvofferid={id}', TOURS: { get:
 ] }) } };
 const hb2 = await hotBlock(hotEnv, day0);
 assert.ok(!/TOMORROW/.test(hb2)); // через 1 день — не берём
-assert.match(hb2, /1️⃣ <b><a href="https:\/\/tourcart\.ru\/#tvofferid=b">W DUBAI THE PALM 5\*<\/a><\/b>\n {6}ОАЭ · \d\d\.\d\d · 9 ноч\. · BB - Только завтрак\n {6}💰 <b>500 ₸<\/b> <s>1\s000 ₸<\/s> <b>-50%<\/b>/);
+assert.match(hb2, /1️⃣ <b><a href="https:\/\/tourcart\.ru\/#tvofferid=b">W DUBAI THE PALM 5\*<\/a><\/b>\n {6}ОАЭ · вылет Астана · \d\d\.\d\d · 9 ноч\. · BB - Только завтрак\n {6}💰 <b>500 ₸<\/b> <s>1\s000 ₸<\/s> <b>-50%<\/b>/);
 
 // вечерние «Горящие»: топ-5, кнопка, пусто → null
 const hot = await channelHot(hotEnv, day0);
+// горящие в канале — со всех городов (до 2 с города)
+const multi = { ...hotEnv, TOURS: { get: async () => JSON.stringify({ items: [
+  ...['a1', 'a2', 'a3'].map((id, i) => ({ id, dep: 'Алматы', country: 'ОАЭ', title: id, descr: desc(3, 'ALMATY HOTEL ' + id + ' 5*'), price: 100 + i, oldPrice: 1000, discount: '-90%' })),
+  { id: 'k1', dep: 'Шымкент', country: 'Египет', title: 'k1', descr: desc(4, 'SHYM HOTEL 4*'), price: 500, oldPrice: 1000, discount: '-50%' },
+] }) } };
+const mb = await hotBlock(multi, day0, 8, 2);
+assert.equal((mb.match(/<a href/g) || []).length, 3); // Алматы — 2 лучших, плюс Шымкент
+assert.match(mb, /ОАЭ · вылет Алматы/);
+assert.match(mb, /Египет · вылет Шымкент/);
+assert.ok(!/ALMATY HOTEL a3/.test(mb));
+assert.match((await hotBlock(multi, day0, 8, 8)), /4️⃣ <b><a href="[^"]+tvofferid=k1/); // четвёртая карточка нумеруется
 assert.match(hot.text, /^🔥 <b>ГОРЯЩИЕ ТУРЫ · [^<]+<\/b>[\s\S]*тур код[\s\S]*Стоимость актуальна на момент публикации[\s\S]*W DUBAI THE PALM 5\*/);
 assert.equal(hot.kb[0][0].text, '🔎 Подобрать тур за 1 минуту');
 assert.equal(await channelHot({ TOURS: { get: async () => null } }, day0), null);

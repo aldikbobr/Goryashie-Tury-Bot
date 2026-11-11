@@ -40,15 +40,21 @@ function sendTour(env, chat_id, t, updated) {
     : tg(env, 'sendMessage', { chat_id, text, parse_mode: 'HTML', reply_markup });
 }
 
+const depOf = t => t.dep || 'Астана'; // туры старой сборки — из Астаны
+
 async function onUpdate(req, env) {
   if (req.headers.get('x-secret') !== env.UPDATE_SECRET) return new Response('forbidden', { status: 403 });
   const data = await req.json();
   if (!Array.isArray(data.items) || !data.items.length) return new Response('empty list', { status: 400 });
+  // туры с городом вылета (dep) заменяют всё; старая сборка без dep — только Астана, остальные города остаются
+  const old = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}').items;
+  const all = data.items.every(t => t.dep);
+  data.items = [...(all ? [] : old.filter(t => depOf(t) !== 'Астана')), ...data.items.map(t => ({ ...t, dep: depOf(t) }))];
   await env.TOURS.put('tours', JSON.stringify(data));
 
   // в канал — только туры, которых там ещё не было, с самой большой скидкой
   const posted = new Set(JSON.parse((await env.TOURS.get('posted')) || '[]'));
-  const fresh = data.items.filter(t => !posted.has(t.id))
+  const fresh = data.items.filter(t => depOf(t) === 'Астана' && !posted.has(t.id)) // одиночные посты в канал — только вылет из Астаны
     .sort((a, b) => (b.oldPrice - b.price) / (b.oldPrice || 1) - (a.oldPrice - a.price) / (a.oldPrice || 1))
     .slice(0, Number(env.POSTS_PER_UPDATE || 3));
   let sent = 0;
@@ -234,7 +240,7 @@ export function groupHotels(hotels) {
 // 🟢 рейтинг 4,5+ · 🟡 4–4,5 · 🟠 3,7–4; звёзды отеля — ⭐ по числу звёзд; группы разделены линиями
 const INCLUDED = '✅ <b>В стоимость включено:</b> перелёт, трансфер, проживание, питание по концепции, медстраховка, тур код';
 const LINE = '━━━━━━━━━━━━━━━━';
-const NUM = ['1️⃣', '2️⃣', '3️⃣'];
+const NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 const badge = r => (r >= 4.5 ? '🟢' : r >= 4 ? '🟡' : '🟠');
 const groupHeader = title => `${LINE}\n${title}\n${LINE}`;
 const ratingTitle = g => `${badge(g.from)} <b>РЕЙТИНГ ${g.title}</b>`;
@@ -307,7 +313,7 @@ function step(w, data, now) {
   };
   if (!w.c) {
     // 🔥 — по этой стране сейчас есть горящие туры
-    const hot = new Set(w.d === '0' ? data.items.map(t => t.country) : []); // горящие из кабинета — только вылет из Астаны
+    const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
     const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
     const btns = COUNTRIES.flatMap((c, i) => (ok.length && !ok.includes(COUNTRY_IDS[c]) ? [] : [pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) })]));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
@@ -325,7 +331,7 @@ function step(w, data, now) {
   return null;
 }
 
-function matches(w, data, now) {
+export function matches(w, data, now) {
   const country = w.c === '*' ? null : countriesOf(data)[+w.c];
   // курорт в горящих турах указан только в тексте: «Фуджейра» → ищем «фудже» (ловит и «в Фуджейру»)
   const resort = w.r && w.r !== '*' && regionName(w)?.toLowerCase().slice(0, 5);
@@ -333,7 +339,7 @@ function matches(w, data, now) {
   const [, from, to] = periods(now)[+w.p];
   return data.items.filter(t => {
     const { date, nights, meal } = tourInfo(t, now);
-    return (!country || t.country === country) && (!resort || (t.title + ' ' + t.descr).toLowerCase().includes(resort)) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
+    return depOf(t) === DEPARTURES[+w.d][0] && (!country || t.country === country) && (!resort || (t.title + ' ' + t.descr).toLowerCase().includes(resort)) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
       && (w.f === '*' || meal === undefined || meal >= +w.f);
   }).sort((a, b) => a.price - b.price).slice(0, 5);
 }
@@ -428,15 +434,13 @@ async function results(env, w, now, chat_id, data, sum) {
       });
     }
   }
-  const fromAstana = w.d === '0'; // горящие туры из кабинета Tourvisor — только с вылетом из Астаны
-  const list = fromAstana ? matches(w, data, now) : [];
+  const list = matches(w, data, now); // горящие туры из кабинета — только выбранного аэропорта
   for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
   const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
   await send({
-    text: (!fromAstana ? '🔥 Горящие туры у нас только с вылетом из Астаны; менеджер подскажет, есть ли спецпредложения из вашего города.'
-      : list.length
-        ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
-        : '🔥 Горящих туров по этим параметрам сейчас нет.')
+    text: (list.length
+      ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
+      : '🔥 Горящих туров по этим параметрам сейчас нет.')
       + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
       + '\n\n' + INCLUDED
       + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера',
@@ -476,31 +480,33 @@ export async function channelDigest(env, now, search = tvSearch) {
   };
 }
 
-// блок «Горящие» для подборки дня: туры из кабинета, вылет не раньше чем через 2 дня, топ-3 по скидке
-export async function hotBlock(env, now, limit = 3) {
+// блок «Горящие» для канала: туры из кабинета всех городов, вылет не раньше чем через 2 дня, лучшие по скидке (не больше perCity с города)
+export async function hotBlock(env, now, limit = 3, perCity = 99) {
   const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
   const soonest = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 2 * DAY;
   const off = t => (t.oldPrice > t.price ? (t.oldPrice - t.price) / t.oldPrice : 0);
   const list = data.items.filter(t => { const d = tourInfo(t, now).date; return d && d >= soonest; })
-    .sort((a, b) => off(b) - off(a)).slice(0, limit);
+    .sort((a, b) => off(b) - off(a));
+  const used = {};
+  list.splice(0, list.length, ...list.filter(t => (used[depOf(t)] = (used[depOf(t)] || 0) + 1) <= perCity).slice(0, limit));
   if (!list.length) return '';
   const card = (t, i) => {
     const { date, nights, meal } = tourInfo(t, now);
     const hotel = (t.descr.match(/\.\s+([A-Z0-9][A-Z0-9 &'().,-]+?\s\d\*)/) || [])[1] || t.title;
     const old = t.oldPrice > t.price ? ` <s>${money(t.oldPrice)}</s> <b>${esc(t.discount)}</b>` : '';
     return `${NUM[i]} <b><a href="${env.TOUR_LINK.replace('{id}', t.id)}">${esc(hotel)}</a></b>\n` +
-      `      ${esc(t.country)} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
+      `      ${esc(t.country)} · вылет ${esc(depOf(t))} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
   };
   return '\n\n' + groupHeader('🔥 <b>ГОРЯЩИЕ</b>') + '\n' + list.map(card).join('\n');
 }
 
 // вечерний пост «Горящие туры» (19:00): топ-5 по скидке из кабинета; пусто — null
 export async function channelHot(env, now) {
-  const block = await hotBlock(env, now, 5);
+  const block = await hotBlock(env, now, 8, 2); // все города, до 2 туров с каждого
   if (!block) return null;
   const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
   return {
-    text: `🔥 <b>ГОРЯЩИЕ ТУРЫ · ${date}</b>\n<i>Вылет из Астаны, самые большие скидки</i>\n\n` + INCLUDED +
+    text: `🔥 <b>ГОРЯЩИЕ ТУРЫ · ${date}</b>\n<i>Из городов Казахстана, самые большие скидки</i>\n\n` + INCLUDED +
       '\n⏱ <b>Стоимость актуальна на момент публикации</b>, наличие уточняйте у менеджера' + block,
     kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
       ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересуют горящие туры из вечерней подборки.')}` }]] : [])],
