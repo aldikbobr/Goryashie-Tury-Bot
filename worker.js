@@ -12,7 +12,9 @@ const tg = (env, method, body) =>
     body: JSON.stringify(body),
   }).then(r => r.json());
 
-const MENU_BUTTON = '🔥 Подобрать тур';
+// одна и та же кнопка: внизу экрана в боте и под постами канала
+const PICK_BUTTON = '🔎 Подобрать тур за 1 минуту';
+const MENU_BUTTON = PICK_BUTTON;
 const money = n => n.toLocaleString('ru-RU').replace(/,/g, ' ') + ' ₸';
 const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
@@ -369,9 +371,9 @@ async function onTelegram(req, env, ctx) {
     // кнопка «Подобрать тур» всегда внизу экрана, под полем ввода
     await tg(env, 'sendMessage', {
       chat_id,
-      text: 'Здравствуйте! Здесь горящие туры из Астаны. Кнопка «🔥 Подобрать тур» всегда внизу экрана.',
+      text: 'Здравствуйте! Здесь горящие туры из Астаны. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
       // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘
-      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур — значок справа ⌘' },
+      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
     });
   }
   await startWizard(env, chat_id, data, now);
@@ -414,15 +416,12 @@ async function results(env, w, now, chat_id, data, sum) {
       + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
       + '\n\n' + INCLUDED
       + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера'
-      + '\n\nНовая подборка — кнопка «🔥 Подобрать тур» внизу.',
+      + '\n\nНовая подборка — кнопка «🔎 Подобрать тур за 1 минуту» внизу.',
     parse_mode: 'HTML',
     reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
   await remember(env, chat_id, ids);
 }
-
-// кнопка под постами канала, которая ведёт в бота на подбор тура
-const PICK_BUTTON = '🔎 Подобрать тур за одну минуту';
 
 // ---------- Канал: ежедневная подборка туров по всем направлениям ----------
 // 2 взрослых, вылет в ближайшие 2 недели, 6–9 ночей; топ-3 самых дешёвых в каждой группе рейтинга и звёздности
@@ -455,12 +454,12 @@ export async function channelDigest(env, now, search = tvSearch) {
 }
 
 // блок «Горящие» для подборки дня: туры из кабинета, вылет не раньше чем через 2 дня, топ-3 по скидке
-export async function hotBlock(env, now) {
+export async function hotBlock(env, now, limit = 3) {
   const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
   const soonest = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 2 * DAY;
   const off = t => (t.oldPrice > t.price ? (t.oldPrice - t.price) / t.oldPrice : 0);
   const list = data.items.filter(t => { const d = tourInfo(t, now).date; return d && d >= soonest; })
-    .sort((a, b) => off(b) - off(a)).slice(0, 3);
+    .sort((a, b) => off(b) - off(a)).slice(0, limit);
   if (!list.length) return '';
   const card = (t, i) => {
     const { date, nights, meal } = tourInfo(t, now);
@@ -470,6 +469,19 @@ export async function hotBlock(env, now) {
       `      ${esc(t.country)} · ${ddmmyyyy(date).slice(0, 5)} · ${nights} ноч.${meal !== undefined ? ' · ' + MEALS[meal] : ''}\n      💰 <b>${money(t.price)}</b>${old}`;
   };
   return '\n\n' + groupHeader('🔥 <b>ГОРЯЩИЕ</b>') + '\n' + list.map(card).join('\n');
+}
+
+// вечерний пост «Горящие туры» (19:00): топ-5 по скидке из кабинета; пусто — null
+export async function channelHot(env, now) {
+  const block = await hotBlock(env, now, 5);
+  if (!block) return null;
+  const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });
+  return {
+    text: `🔥 <b>ГОРЯЩИЕ ТУРЫ · ${date}</b>\n<i>Вылет из Астаны, самые большие скидки</i>\n\n` + INCLUDED +
+      '\n⏱ <b>Стоимость актуальна на момент публикации</b>, наличие уточняйте у менеджера' + block,
+    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
+      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересуют горящие туры из вечерней подборки.')}` }]] : [])],
+  };
 }
 
 // ---------- Канал: новости туризма (заголовок + ссылка на источник) ----------
@@ -543,7 +555,7 @@ export async function channelWeather(env, now) {
   };
 }
 
-// ---------- Канал: вечерний пост в 20:00 — картинка с отдыха + призыв ехать (креативы меняются каждый день) ----------
+// ---------- Канал: вечерний пост в 19:00 — картинка с отдыха + призыв ехать (креативы меняются каждый день) ----------
 // [что нарисовать (по-английски, нейросеть так понимает лучше), заголовок, текст, страна для WhatsApp]
 const CREATIVES = [
   ['Phuket Thailand white sand beach, turquoise Andaman sea, limestone cliffs, longtail boats, golden hour', 'Ты это заслужил', 'Рабочий день позади. А где-то уже тёплое море и закат. Выбери тур сегодня — отпуск сам себя не купит.', 'Таиланд'],
@@ -587,7 +599,7 @@ async function runChannel(env, job, now = new Date()) {
     if (job === 'news') {
       const text = await channelNews(env);
       if (!text) return { ok: true, posted: 0 };
-      const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+      const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }]] } });
       return { ok: r.ok, error: r.description };
     }
     if (job === 'evening') {
@@ -595,12 +607,16 @@ async function runChannel(env, job, now = new Date()) {
       if (!r.ok) throw new Error(r.description);
       return { ok: true, withPicture: Array.isArray(r.result?.photo) };
     }
-    const d = job === 'weather' ? await channelWeather(env, now) : await channelDigest(env, now);
+    const d = job === 'weather' ? await channelWeather(env, now) : job === 'hot' ? await channelHot(env, now) : await channelDigest(env, now);
+    if (!d) { // в базе нет туров с вылетом через 2+ дня: пустое не публикуем, владельцу сообщаем
+      await alertAdmin(env, 'Горящие туры 19:00 не вышли: в базе нет актуальных. Войдите в https://pro.tourvisor.ru в Chrome, чтобы они обновились.');
+      return { ok: true, posted: 0 };
+    }
     const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text: d.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: d.kb } });
     if (!r.ok) throw new Error(r.description);
     return { ok: true };
   } catch (e) {
-    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду', evening: 'вечерний пост' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
+    await alertAdmin(env, `Канал: не получилось опубликовать ${{ news: 'новости', weather: 'погоду', evening: 'вечерний пост', hot: 'горящие туры' }[job] || 'подборку дня'} (${String(e.message || e).slice(0, 150)}).`);
     return { ok: false, error: String(e.message || e) };
   }
 }
@@ -637,8 +653,9 @@ export default {
     }
     return new Response('Not found', { status: 404 });
   },
-  // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 20:00 — вечерний пост
+  // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runChannel(env, { '0 9 * * *': 'news', '0 10 * * *': 'weather', '0 15 * * *': 'evening' }[event.cron] || 'tours'));
+    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['weather'], '0 14 * * *': ['evening', 'hot'] }[event.cron] || ['tours'];
+    ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };

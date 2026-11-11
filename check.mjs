@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -83,7 +83,7 @@ assert.equal(kv.get('admin'), '99');
 // /start: постоянная кнопка внизу + первый шаг подбора
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
-assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔥 Подобрать тур' }]]);
+assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔎 Подобрать тур за 1 минуту' }]]);
 assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
 assert.match(sent[1].text, /Сколько взрослых/); // первым шагом — туристы
 let wizardId = msgId;
@@ -143,7 +143,7 @@ const resultIds = [msgId - 4, msgId - 3, msgId - 2, msgId - 1, msgId]; // 3 по
 
 // «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
 sent.length = 0;
-await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔥 Подобрать тур' } }, TG);
+await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 assert.equal(sent[0].method, 'deleteMessages');
 assert.deepEqual(sent[0].message_ids.sort(), [wizardId, ...resultIds, 55].sort());
 assert.match(sent[1].text, /Сколько взрослых/);
@@ -159,7 +159,7 @@ assert.equal(tvCalls.length, 0);
 for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k); // убираем сохранённые результаты поиска
 tvMode = 'down';
 sent.length = 0;
-await post('/tg', { message: { chat: { id: 7 }, message_id: 60, text: '🔥 Подобрать тур' } }, TG);
+await post('/tg', { message: { chat: { id: 7 }, message_id: 60, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 wizardId = msgId;
 await wizard();
 const alert = sent.find(m => m.chat_id === '99');
@@ -173,7 +173,7 @@ const day = s => Date.UTC(...s.split('.').reverse().map((v, i) => (i === 1 ? v -
 assert.ok((day(lq.get('s_j_date_to')) - day(lq.get('s_j_date_from'))) / 864e5 <= 20); // лимит Tourvisor — 21 день
 // второй сбой подряд — владельцу повторно не пишем (не чаще раза в 6 часов)
 sent.length = 0;
-await post('/tg', { message: { chat: { id: 7 }, message_id: 61, text: '🔥 Подобрать тур' } }, TG);
+await post('/tg', { message: { chat: { id: 7 }, message_id: 61, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 wizardId = msgId;
 await wizard();
 assert.ok(!sent.some(m => m.chat_id === '99'));
@@ -207,6 +207,12 @@ const hb2 = await hotBlock(hotEnv, day0);
 assert.ok(!/TOMORROW/.test(hb2)); // через 1 день — не берём
 assert.match(hb2, /1️⃣ <b><a href="https:\/\/tourcart\.ru\/#tvofferid=b">W DUBAI THE PALM 5\*<\/a><\/b>\n {6}ОАЭ · \d\d\.\d\d · 9 ноч\. · BB - Только завтрак\n {6}💰 <b>500 ₸<\/b> <s>1\s000 ₸<\/s> <b>-50%<\/b>/);
 
+// вечерние «Горящие»: топ-5, кнопка, пусто → null
+const hot = await channelHot(hotEnv, day0);
+assert.match(hot.text, /^🔥 <b>ГОРЯЩИЕ ТУРЫ · [^<]+<\/b>[\s\S]*тур код[\s\S]*Стоимость актуальна на момент публикации[\s\S]*W DUBAI THE PALM 5\*/);
+assert.equal(hot.kb[0][0].text, '🔎 Подобрать тур за 1 минуту');
+assert.equal(await channelHot({ TOURS: { get: async () => null } }, day0), null);
+
 // погода: Астана и курорт дня в сезоне, температура воды, на сколько теплее
 const nov = new Date(Date.UTC(2026, 10, 10, 10));
 assert.ok(['Пхукет', 'Шарм-эль-Шейх', 'Дубай', 'Фукуок', 'Санья (Хайнань)', 'Мальдивы', 'Гоа', 'Хургада'].includes(resortOfDay(nov)[0]));
@@ -216,9 +222,9 @@ assert.match(wr.text, /АСТАНА<\/b>\n━+\n {6}🌨 снег\n {6}днём 
 assert.match(wr.text, /🌤 малооблачно\n {6}днём <b>\+31°<\/b> · ночью \+25°\n {6}🌊 вода <b>\+30°<\/b>/);
 assert.match(wr.text, /Там на <b>35°<\/b> теплее, чем в Астане/);
 assert.equal(wr.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-assert.equal(wr.kb[0][0].text, '🔎 Подобрать тур за одну минуту'); // кнопка в погоде
+assert.equal(wr.kb[0][0].text, '🔎 Подобрать тур за 1 минуту'); // кнопка в погоде
 assert.equal(d.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-for (const b of [d.kb[0][0]]) assert.equal(b.text, '🔎 Подобрать тур за одну минуту'); // кнопка в подборке дня
+for (const b of [d.kb[0][0]]) assert.equal(b.text, '🔎 Подобрать тур за 1 минуту'); // кнопка в подборке дня
 await assert.rejects(channelDigest(env, new Date(), async () => { throw new Error('блок'); }), /ни одна страна не ответила/);
 
 // новости: только про туризм, без повторов, источник указан; второй раз — ничего нового
@@ -239,7 +245,7 @@ assert.ok(ev1.text !== ev2.text && aiPrompts[0] !== aiPrompts[1]); // креат
 assert.match(ev1.text, /^🌅 <b>[^<]+<\/b>\n\n[\s\S]*Иллюстрация создана нейросетью/);
 assert.ok(ev1.text.replace(/<[^>]+>/g, '').length < 1024); // лимит подписи к фото
 assert.equal(ev1.kb[0][0].url, 'https://t.me/HotToursAstana_bot');
-assert.equal(ev1.kb[0][0].text, '🔎 Подобрать тур за одну минуту'); // кнопка в вечернем посте
+assert.equal(ev1.kb[0][0].text, '🔎 Подобрать тур за 1 минуту'); // кнопка в вечернем посте
 assert.match(decodeURIComponent(ev1.kb[1][0].url), /^https:\/\/wa\.me\/1\?text=Здравствуйте! Хочу в отпуск: /);
 sent.length = 0;
 const rr = await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', headers: { 'x-secret': 's' } }), aiEnv, ctx);
