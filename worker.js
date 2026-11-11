@@ -61,7 +61,7 @@ async function onUpdate(req, env) {
   return Response.json({ saved: data.items.length, posted: sent });
 }
 
-// ---------- Пошаговый подбор: взрослые → дети и их возраст → питание → страна → курорт → ночи → период ----------
+// ---------- Пошаговый подбор: аэропорт вылета (РК) → взрослые → дети и их возраст → питание → страна → курорт → ночи → период ----------
 // Выбор хранится прямо в кнопках: w:страна:взрослые:дети:возрасты:ночи:период (страна и период — номера в списках).
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -126,6 +126,10 @@ const MEAL_IDS = [2, 3, 4, 5, 7, 9]; // RO, BB, HB, FB, AI, UAI — в том ж
 const RATINGS = [['⭐ Рейтинг 4,5 и выше', 5], ['⭐ Рейтинг 4,0 и выше', 4], ['⭐ Рейтинг 3,5 и выше', 3]];
 const ddmmyyyy = ms => new Date(ms).toISOString().slice(0, 10).split('-').reverse().join('.');
 const countryId = w => COUNTRY_IDS[COUNTRIES[+w.c]];
+// Аэропорты вылета в РК — список «Вылет из» в Tourvisor (national=3, проверено 11.11.2026); номер = индекс, 0 = Астана
+const DEPARTURES = [['Астана', 59], ['Петропавловск', 98], ['Алматы', 60], ['Шымкент', 79], ['Караганда', 76], ['Актау', 74], ['Актобе', 73],
+  ['Атырау', 75], ['Костанай', 68], ['Кызылорда', 77], ['Семей', 121], ['Туркестан', 120], ['Уральск', 84], ['Усть-Каменогорск', 78]];
+const depId = w => DEPARTURES[+w.d][1];
 
 // Курорты страны — как список «Любой курорт» в поиске Tourvisor (без мелких районов). Хранятся 7 дней.
 const REGIONS = new Map(); // номер страны → [[номер курорта, название], …]
@@ -158,7 +162,7 @@ function range(w, now) {
 export function searchLink(w, now, rating, hotel) {
   const r = range(w, now);
   const p = new URLSearchParams({
-    ts_dosearch: 1, s_form_mode: 0, s_regular: 1, s_flyfrom: 59, s_currency: 3, // вылет из Астаны, цены в тенге
+    ts_dosearch: 1, s_form_mode: 0, s_regular: 1, s_flyfrom: depId(w), s_currency: 3, // цены в тенге
     s_country: COUNTRY_IDS[COUNTRIES[+w.c]], s_adults: w.a,
     s_nights_from: hotel ? hotel.nights : r.nMin, s_nights_to: hotel ? hotel.nights : r.nMax,
     s_j_date_from: hotel ? hotel.date : r.from, s_j_date_to: hotel ? hotel.date : r.to, s_rating: rating,
@@ -179,7 +183,7 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
   const p = new URLSearchParams({
     datefrom: r.from, dateto: r.to, nightsfrom: r.nMin, nightsto: r.nMax, adults: w.a, child: +w.k || 0,
     meal: w.f === '*' ? 0 : MEAL_IDS[+w.f], rating: 3, // 3 = от 3,5; дальше делим на группы сами
-    country: COUNTRY_IDS[COUNTRIES[+w.c]], departure: 59, currency: 3,
+    country: COUNTRY_IDS[COUNTRIES[+w.c]], departure: depId(w), currency: 3,
     directflight: 0, regular: 1, pricefrom: 0, priceto: 0, formmode: 0, origincountry: 3, pricetype: 0,
   });
   w.ages.forEach((a, i) => p.set(`childage${i + 1}`, a === '0' ? 1 : a));
@@ -239,7 +243,7 @@ function groupMessage(w, now, g) {
 
 // подборки по рейтингу: результат поиска хранится 30 минут, чтобы не искать одно и то же повторно
 async function ratingSelections(env, w, now) {
-  const key = 'q:' + [w.a, w.k, w.ages.join('.'), w.f, w.c, w.r, w.n, w.p, range(w, now).from].join(':');
+  const key = 'q:' + [w.d, w.a,w.k, w.ages.join('.'), w.f, w.c, w.r, w.n, w.p, range(w, now).from].join(':');
   const cached = await env.TOURS.get(key);
   if (cached) return JSON.parse(cached);
   const hotels = await tvSearch(w, now);
@@ -254,14 +258,15 @@ async function alertAdmin(env, text) {
   await env.TOURS.put('alerted', '1', { expirationTtl: 6 * 3600 });
   await tg(env, 'sendMessage', { chat_id: admin, text: '⚠️ ' + text });
 }
-const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = '', r = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f, r }; };
-const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f, w.r].join(':');
+const decode = s => { const [, c = '', a = '', k = '', ages = '', n = '', p = '', f = '', r = '', d = ''] = s.split(':'); return { c, a, k, ages: ages ? ages.split('.') : [], n, p, f, r, d }; };
+const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f, w.r, w.d].join(':');
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
 const rows = (btns, per) => { const r = []; for (let i = 0; i < btns.length; i += per) r.push(btns.slice(i, i + per)); return r; };
 const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : 'детей');
 
 function summary(w, data, now) {
   const lines = [];
+  if (w.d) lines.push('Вылет: ' + DEPARTURES[+w.d][0]);
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
   if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
@@ -274,6 +279,7 @@ function summary(w, data, now) {
 // следующий вопрос; null — всё выбрано
 function step(w, data, now) {
   const head = (summary(w, data, now) ? summary(w, data, now) + '\n\n' : '') + '👉 ';
+  if (!w.d) return { text: head + 'Из какого аэропорта вылет?', kb: rows(DEPARTURES.map(([name], i) => pick(w, 'd', { text: name, v: String(i) })), 2) };
   if (!w.a) return { text: head + 'Сколько взрослых?', kb: rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4) };
   if (!w.k) return { text: head + 'Сколько детей?', kb: rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4) };
   if (w.ages.length < +w.k) {
@@ -287,7 +293,7 @@ function step(w, data, now) {
   };
   if (!w.c) {
     // 🔥 — по этой стране сейчас есть горящие туры
-    const hot = new Set(data.items.map(t => t.country));
+    const hot = new Set(w.d === '0' ? data.items.map(t => t.country) : []); // горящие из кабинета — только вылет из Астаны
     const btns = COUNTRIES.map((c, i) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
   }
@@ -371,7 +377,7 @@ async function onTelegram(req, env, ctx) {
     // кнопка «Подобрать тур» всегда внизу экрана, под полем ввода
     await tg(env, 'sendMessage', {
       chat_id,
-      text: 'Здравствуйте! Здесь горящие туры из Астаны. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
+      text: 'Здравствуйте! Здесь горящие туры и подбор туров из городов Казахстана. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
       // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘
       reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
     });
@@ -406,17 +412,18 @@ async function results(env, w, now, chat_id, data, sum) {
       });
     }
   }
-  const list = matches(w, data, now);
+  const fromAstana = w.d === '0'; // горящие туры из кабинета Tourvisor — только с вылетом из Астаны
+  const list = fromAstana ? matches(w, data, now) : [];
   for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
   const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
   await send({
-    text: (list.length
-      ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
-      : '🔥 Горящих туров по этим параметрам сейчас нет.')
+    text: (!fromAstana ? '🔥 Горящие туры у нас только с вылетом из Астаны; менеджер подскажет, есть ли спецпредложения из вашего города.'
+      : list.length
+        ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'
+        : '🔥 Горящих туров по этим параметрам сейчас нет.')
       + (w.c === '*' ? '\n\nЧтобы получить подборки по рейтингу отелей, выберите конкретную страну.' : '')
       + '\n\n' + INCLUDED
-      + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера'
-      + '\n\nНовая подборка — кнопка «🔎 Подобрать тур за 1 минуту» внизу.',
+      + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера',
     parse_mode: 'HTML',
     reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
@@ -429,7 +436,7 @@ const DIGEST_COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'О�
 const STAR_GROUPS = [['ПЯТЬ ЗВЁЗД', 5], ['ЧЕТЫРЕ ЗВЕЗДЫ', 4], ['ТРИ ЗВЕЗДЫ', 3]];
 
 export async function channelDigest(env, now, search = tvSearch) {
-  const base = { a: '2', k: '0', ages: [], f: '*', r: '', n: '1', p: '0' };
+  const base = { d: '0', a: '2', k: '0', ages: [], f: '*', r: '', n: '1', p: '0' };
   const found = await Promise.allSettled(DIGEST_COUNTRIES.map(async name => {
     const w = { ...base, c: String(COUNTRIES.indexOf(name)) };
     return (await search(w, now)).map(h => ({ ...h, country: name, w }));

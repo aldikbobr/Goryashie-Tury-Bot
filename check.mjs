@@ -85,7 +85,8 @@ sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
 assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔎 Подобрать тур за 1 минуту' }]]);
 assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
-assert.match(sent[1].text, /Сколько взрослых/); // первым шагом — туристы
+assert.match(sent[1].text, /Из какого аэропорта/); // первым шагом — аэропорт вылета (РК)
+assert.deepEqual(sent[1].reply_markup.inline_keyboard.flat().map(b => b.text), ['Астана', 'Петропавловск', 'Алматы', 'Шымкент', 'Караганда', 'Актау', 'Актобе', 'Атырау', 'Костанай', 'Кызылорда', 'Семей', 'Туркестан', 'Уральск', 'Усть-Каменогорск']);
 let wizardId = msgId;
 
 // клиент проходит шаги, нажимая кнопки
@@ -96,7 +97,9 @@ const press = async label => {
   await post('/tg', { callback_query: { id: 'q', data: btn.callback_data, message: { chat: { id: 7 }, message_id: wizardId } } }, TG);
   assert.ok(btn.callback_data.length <= 64);
 };
-const wizard = async () => {
+const wizard = async (city = 'Астана') => {
+  const hot = city === 'Астана' ? '🔥 ' : '';
+  await press(city); assert.match(sent.at(-1).text, /Вылет: .*\n\n👉 Сколько взрослых/);
   await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
   await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
   assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
@@ -106,8 +109,8 @@ const wizard = async () => {
   await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
   const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
   assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
-  assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', '🔥 Таиланд', '🔥 ОАЭ']); // 🔥 — есть горящие туры
-  await press('🔥 Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
+  assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', hot + 'Таиланд', hot + 'ОАЭ']); // 🔥 — есть горящие туры (только вылет из Астаны)
+  await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
   // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
   assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['Любой курорт', 'Пхукет', 'Паттайя']);
   await press('Пхукет'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
@@ -117,7 +120,7 @@ const wizard = async () => {
 await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
-assert.match(sent[1].text, /Туристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+assert.match(sent[1].text, /Вылет: Астана\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
 assert.match(sent[2].text, /Ищу туры/);
 assert.equal(sent[3].method, 'deleteMessage');
 // в поиск Tourvisor ушли параметры клиента
@@ -138,7 +141,9 @@ assert.equal(new URL(groups[0].reply_markup.inline_keyboard.at(-1)[0].url).searc
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
-assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nТуристы: 2 взр\./);
+assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nТуристы: 2 взр\./);
+assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
+assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
 const resultIds = [msgId - 4, msgId - 3, msgId - 2, msgId - 1, msgId]; // 3 подборки, фото тура, кнопка заявки
 
 // «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
@@ -146,7 +151,7 @@ sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 assert.equal(sent[0].method, 'deleteMessages');
 assert.deepEqual(sent[0].message_ids.sort(), [wizardId, ...resultIds, 55].sort());
-assert.match(sent[1].text, /Сколько взрослых/);
+assert.match(sent[1].text, /Из какого аэропорта/);
 assert.equal(sent.length, 2); // без повторного приветствия
 wizardId = msgId;
 
@@ -177,6 +182,23 @@ await post('/tg', { message: { chat: { id: 7 }, message_id: 61, text: '🔎 По
 wizardId = msgId;
 await wizard();
 assert.ok(!sent.some(m => m.chat_id === '99'));
+
+// другой город вылета: Петропавловск (98) уходит в ссылки и в поиск; горящих из кабинета (только Астана) нет
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 7 }, message_id: 62, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
+wizardId = msgId;
+await wizard('Петропавловск');
+assert.match(sent[1].text, /Вылет: Петропавловск/);
+assert.equal(new URL(sent.find(m => /Подборки по рейтингу/.test(m.text || '')).reply_markup.inline_keyboard[0][0].url).searchParams.get('s_flyfrom'), '98');
+assert.ok(!sent.some(m => m.method === 'sendPhoto'));
+assert.match(sent.at(-1).text, /только с вылетом из Астаны/);
+tvMode = 'ok'; tvCalls.length = 0;
+for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k);
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 7 }, message_id: 63, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
+wizardId = msgId;
+await wizard('Петропавловск');
+assert.equal(new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams.get('departure'), '98');
 
 // подборка дня для канала: все страны вместе, топ-3 самых дешёвых в группах рейтинга и звёздности
 const fake = async w => [
