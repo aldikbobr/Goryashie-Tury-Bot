@@ -106,10 +106,10 @@ export function periods(now = new Date()) {
   return list;
 }
 
-// Страны из поиска Tourvisor с вылетом из Астаны (08.11.2026): сначала популярные, как у Tourvisor, затем по алфавиту.
+// Все страны Tourvisor по аэропортам РК (11.11.2026, 43 шт.): сначала популярные, как у Tourvisor, затем по алфавиту.
 // ponytail: список зашит вручную; если у Tourvisor появятся новые направления — дописать сюда.
 const COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', 'Россия', 'Китай', 'Вьетнам',
-  'Австрия', 'Азербайджан', 'Армения', 'Бахрейн', 'Беларусь', 'Венгрия', 'Греция', 'Грузия', 'Доминикана', 'Индия',
+  'Австрия', 'Азербайджан', 'Армения', 'Бахрейн', 'Беларусь', 'Великобритания', 'Венгрия', 'Греция', 'Грузия', 'Доминикана', 'Индия',
   'Индонезия', 'Испания', 'Италия', 'Казахстан', 'Катар', 'Кипр', 'Кыргызстан', 'Маврикий', 'Малайзия', 'Мальдивы',
   'Марокко', 'Оман', 'Сейшелы', 'Сербия', 'Сингапур', 'Словения', 'Танзания', 'Тунис', 'Узбекистан', 'Франция',
   'Черногория', 'Чехия', 'Шри-Ланка', 'Южная Корея', 'Япония'];
@@ -117,7 +117,7 @@ const countriesOf = () => COUNTRIES;
 
 // ---------- Ссылки на поиск Tourvisor с параметрами клиента (проверено 08.11.2026) ----------
 const COUNTRY_IDS = { Турция: 4, Египет: 1, Таиланд: 2, ОАЭ: 9, Россия: 47, Китай: 13, Вьетнам: 16, Австрия: 31, Азербайджан: 55,
-  Армения: 53, Бахрейн: 59, Беларусь: 57, Венгрия: 37, Греция: 6, Грузия: 54, Доминикана: 11, Индия: 3, Индонезия: 7, Испания: 14,
+  Армения: 53, Бахрейн: 59, Беларусь: 57, Великобритания: 44, Венгрия: 37, Греция: 6, Грузия: 54, Доминикана: 11, Индия: 3, Индонезия: 7, Испания: 14,
   Италия: 24, Казахстан: 78, Катар: 79, Кипр: 15, Кыргызстан: 60, Маврикий: 27, Малайзия: 36, Мальдивы: 8, Марокко: 23, Оман: 64,
   Сейшелы: 28, Сербия: 58, Сингапур: 25, Словения: 43, Танзания: 41, Тунис: 5, Узбекистан: 56, Франция: 32, Черногория: 21,
   Чехия: 19, 'Шри-Ланка': 12, 'Южная Корея': 70, Япония: 49 };
@@ -145,6 +145,20 @@ export async function loadRegions(env, cid) {
   }
   REGIONS.set(cid, list);
   return list;
+}
+// Какие страны есть у выбранного аэропорта вылета — как в Tourvisor; хранится 7 дней. Не ответил — показываем все.
+const AVAIL = new Map(); // номер вылета → [номера стран]
+export async function loadCountries(env, dep) {
+  if (AVAIL.has(dep)) return;
+  let ids = JSON.parse((await env.TOURS.get('c:' + dep)) || 'null');
+  if (!ids) {
+    try {
+      const j = await fetch(`https://tourvisor.ru/xml/listdev.php?type=country&cndep=${dep}&flydeparture=${dep}&format=json`, { headers: TV_HEADERS }).then(x => x.json());
+      ids = ((j.lists || j).countries?.country || []).map(c => c.id);
+      if (ids.length) await env.TOURS.put('c:' + dep, JSON.stringify(ids), { expirationTtl: 7 * 86400 });
+    } catch { ids = []; }
+  }
+  if (ids.length) AVAIL.set(dep, ids); // сбой не запоминаем — в следующий раз попробуем снова
 }
 const regionName = w => (REGIONS.get(countryId(w)) || []).find(([id]) => String(id) === w.r)?.[1];
 
@@ -294,7 +308,8 @@ function step(w, data, now) {
   if (!w.c) {
     // 🔥 — по этой стране сейчас есть горящие туры
     const hot = new Set(w.d === '0' ? data.items.map(t => t.country) : []); // горящие из кабинета — только вылет из Астаны
-    const btns = COUNTRIES.map((c, i) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
+    const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
+    const btns = COUNTRIES.flatMap((c, i) => (ok.length && !ok.includes(COUNTRY_IDS[c]) ? [] : [pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) })]));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
   }
   if (!w.r) {
@@ -349,6 +364,7 @@ async function onTelegram(req, env, ctx) {
     await tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
     if (!q.data.startsWith('w')) return new Response('ok'); // кнопки из старой версии бота
     const w = decode(q.data);
+    if (w.d) await loadCountries(env, depId(w));
     if (w.c && w.c !== '*') await loadRegions(env, countryId(w));
     const s = step(w, data, now);
     if (s) {

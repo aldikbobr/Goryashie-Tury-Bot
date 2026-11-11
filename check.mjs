@@ -26,6 +26,7 @@ globalThis.fetch = async (url, o) => {
   if (url.includes('tourvisor.ru')) {
     tvCalls.push(url);
     if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
+    if (url.includes('type=country')) return Response.json({ lists: url.includes('cndep=98') ? { countries: { country: [{ id: 78 }, { id: 2 }] } } : {} }); // у Петропавловска — только Казахстан и Таиланд (для проверки)
     if (url.includes('listdev')) return Response.json({ lists: { regions: { region: [
       { id: 6, name: 'Пхукет', parentid: 0 }, { id: 5, name: 'Паттайя', parentid: 0 }, { id: 600, name: 'Патонг', parentid: 6 }] } } });
     return Response.json(url.includes('modsearch') ? { result: { requestid: 1 } } : tvResult);
@@ -108,8 +109,9 @@ const wizard = async (city = 'Астана') => {
     ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено']);
   await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
   const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
-  assert.equal(countryBtns.length, 43); // «Любая страна» + 42 страны Tourvisor из Астаны
-  assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', hot + 'Таиланд', hot + 'ОАЭ']); // 🔥 — есть горящие туры (только вылет из Астаны)
+  if (city === 'Астана') assert.equal(countryBtns.length, 44); // «Любая страна» + 43 страны Tourvisor
+  else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
+  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', hot + 'Таиланд', hot + 'ОАЭ']); // 🔥 — есть горящие туры (только вылет из Астаны)
   await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
   // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
   assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['Любой курорт', 'Пхукет', 'Паттайя']);
@@ -158,7 +160,7 @@ wizardId = msgId;
 // тот же запрос повторно — берётся из сохранённого, Tourvisor не дёргаем
 tvCalls.length = 0;
 await wizard();
-assert.equal(tvCalls.length, 0);
+assert.equal(tvCalls.filter(u => !u.includes('listdev')).length, 0); // списки стран и курортов — не поиск
 
 // Tourvisor заблокировал: клиенту — ссылки, владельцу — сообщение о сбое
 for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k); // убираем сохранённые результаты поиска
