@@ -442,12 +442,6 @@ async function onTelegram(req, env, ctx) {
       await startWizard(env, chat_id, data, now);
       return new Response('ok');
     }
-    if (q.data.startsWith('go:')) {
-      // Telegram не умеет прокручивать чат по команде бота, поэтому отвечаем цитатой на начало подборки: нажатие на цитату открывает его
-      const r = await tg(env, 'sendMessage', { chat_id, text: '⬆️ Начало подборки: нажмите на цитату «Последняя подборка» над этим сообщением.', reply_parameters: { message_id: +q.data.slice(3), allow_sending_without_reply: true } });
-      if (r.ok) await remember(env, chat_id, [r.result.message_id]);
-      return new Response('ok');
-    }
     if (!q.data.startsWith('w')) return new Response('ok'); // кнопки из старой версии бота
     const w = decode(q.data);
     if (w.d) await loadCountries(env, depId(w));
@@ -493,32 +487,11 @@ async function onTelegram(req, env, ctx) {
   return new Response('ok');
 }
 
-// Разделитель перед каждой свежей подборкой: синяя полоса картинкой на всю ширину сообщения (из эмодзи ширина зависит от экрана) + подпись.
-// Файл Telegram принимает один раз, дальше берём его file_id из базы. Если картинка не прошла — запасной вариант из синих квадратов.
-const DIVIDER_PNG = 'iVBORw0KGgoAAAANSUhEUgAAA+gAAAA8CAIAAAB6hgcXAAABIUlEQVR42u3WMQ0AAAgEsVeCRYRjAhMMDE2q4KZL9QAAAM9FAgAAMO4AAIBxBwAA4w4AABh3AADAuAMAgHEHAACMOwAAYNwBAMC4AwAAxh0AAIw7AABg3AEAAOMOAADGHQAAMO4AAIBxBwAA4w4AABh3AADAuAMAgHEHAACMOwAAGHcAAMC4AwAAxh0AAIw7AABg3AEAAOMOAADGHQAAMO4AAGDcAQAA4w4AABh3AAAw7gAAgHEHAACMOwAAGHcAAMC4AwAAxh0AAIw7AABg3AEAwLgDAADGHQAAMO4AAGDcAQAA4w4AABh3AAAw7gAAgHEHAADjDgAAGHcAAMC4AwCAcQcAAIw7AABg3AEAwLgDAADGHQAAMO4AAGDcAQCAGwuPglEpqe/BOgAAAABJRU5ErkJggg==';
-const DIVIDER_CAPTION = '👇 <b>Последняя подборка</b>';
-async function sendDivider(env, chat_id) {
-  let r;
-  const fid = await env.TOURS.get('divider');
-  if (fid) r = await tg(env, 'sendPhoto', { chat_id, photo: fid, caption: DIVIDER_CAPTION, parse_mode: 'HTML' });
-  if (!r?.ok) {
-    const f = new FormData();
-    f.set('chat_id', String(chat_id)); f.set('caption', DIVIDER_CAPTION); f.set('parse_mode', 'HTML');
-    f.set('photo', new Blob([Uint8Array.from(atob(DIVIDER_PNG), c => c.charCodeAt(0))], { type: 'image/png' }), 'divider.png');
-    r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendPhoto`, { method: 'POST', body: f }).then(x => x.json());
-    const file = r.ok && r.result.photo?.at(-1)?.file_id;
-    if (file) await env.TOURS.put('divider', file);
-  }
-  if (!r?.ok) r = await tg(env, 'sendMessage', { chat_id, text: '🟦'.repeat(12) + '\n' + DIVIDER_CAPTION, parse_mode: 'HTML' });
-  return r;
-}
-
 // итог подбора: 3 подборки по рейтингу (поиск Tourvisor; при сбое — ссылки) + горящие туры + заявка менеджеру
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
-  const sep = await sendDivider(env, chat_id); // разделитель перед каждой свежей подборкой — всегда
-  if (sep.ok) ids.push(sep.result.message_id);
+  await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>Последняя подборка</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
   if (w.c !== '*') {
     const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
     let groups = null;
@@ -552,10 +525,7 @@ async function results(env, w, now, chat_id, data, sum) {
       + '\n\n' + INCLUDED
       + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера',
     parse_mode: 'HTML',
-    reply_markup: { inline_keyboard: [
-      ...(sep.ok ? [[{ text: '👆 Просмотреть подобранный тур', callback_data: 'go:' + sep.result.message_id, style: 'primary' }]] : []), // синяя кнопка: к началу подборки
-      ...(env.CONTACT_URL ? [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] : []),
-    ] },
+    reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
   await remember(env, chat_id, ids);
 }
