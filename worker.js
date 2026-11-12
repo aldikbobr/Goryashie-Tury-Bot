@@ -392,6 +392,21 @@ async function startWizard(env, chat_id, data, now) {
   if (r.ok) await remember(env, chat_id, [r.result.message_id]);
 }
 
+// Доступ к боту: до 20 ноября 2026 включительно открыт всем, с 21 ноября (00:00 по Астане) — только подписчикам канала.
+// Проверка через getChatMember (бот — администратор канала). Если Telegram не ответил, пускаем: лучше открыть, чем закрыть всем.
+const OPEN_UNTIL = '2026-11-21T00:00:00+05:00';
+async function isAllowed(env, user_id, now) {
+  if (now.getTime() < Date.parse(env.OPEN_UNTIL || OPEN_UNTIL) || !env.CHANNEL_ID) return true;
+  const r = await tg(env, 'getChatMember', { chat_id: env.CHANNEL_ID, user_id });
+  if (!r.ok) { await alertAdmin(env, `Не удалось проверить подписку на канал (${String(r.description || '').slice(0, 100)}). Бот пока открыт всем.`); return true; }
+  return ['creator', 'administrator', 'member'].includes(r.result.status) || (r.result.status === 'restricted' && r.result.is_member);
+}
+const channelUrl = env => 'https://t.me/' + String(env.CHANNEL_ID).replace('@', '');
+const lockedMessage = env => ({
+  text: '🔒 Бот горящих туров доступен подписчикам нашего канала. Подпишитесь и нажмите «Проверить подписку».',
+  reply_markup: { inline_keyboard: [[{ text: '📢 Подписаться на канал', url: channelUrl(env) }], [{ text: '✅ Проверить подписку', callback_data: 'chk' }]] },
+});
+
 async function onTelegram(req, env, ctx) {
   if (req.headers.get('x-telegram-bot-api-secret-token') !== env.TG_SECRET) return new Response('forbidden', { status: 403 });
   const u = await req.json();
@@ -400,7 +415,17 @@ async function onTelegram(req, env, ctx) {
 
   if (u.callback_query) {
     const q = u.callback_query, chat_id = q.message.chat.id, message_id = q.message.message_id;
+    if (!(await isAllowed(env, q.from?.id ?? chat_id, now))) {
+      await tg(env, 'answerCallbackQuery', { callback_query_id: q.id, text: q.data === 'chk' ? 'Подписки пока нет' : 'Бот доступен подписчикам канала', show_alert: q.data === 'chk' });
+      if (q.data !== 'chk') await tg(env, 'sendMessage', { chat_id, ...lockedMessage(env) });
+      return new Response('ok');
+    }
     await tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
+    if (q.data === 'chk') { // подписка подтверждена — начинаем подбор
+      await tg(env, 'deleteMessage', { chat_id, message_id });
+      await startWizard(env, chat_id, data, now);
+      return new Response('ok');
+    }
     if (!q.data.startsWith('w')) return new Response('ok'); // кнопки из старой версии бота
     const w = decode(q.data);
     if (w.d) await loadCountries(env, depId(w));
@@ -423,6 +448,10 @@ async function onTelegram(req, env, ctx) {
   if (env.ADMIN_CODE && u.message.text === '/admin ' + env.ADMIN_CODE) {
     await env.TOURS.put('admin', String(chat_id));
     await tg(env, 'sendMessage', { chat_id, text: 'Готово: сообщения о сбоях поиска Tourvisor будут приходить сюда.' });
+    return new Response('ok');
+  }
+  if (!(await isAllowed(env, u.message.from?.id ?? chat_id, now))) {
+    await tg(env, 'sendMessage', { chat_id, ...lockedMessage(env) });
     return new Response('ok');
   }
   // кнопка внизу экрана обновляется только когда бот шлёт клавиатуру заново: один раз на чат, даже если человек не нажимал «Старт»

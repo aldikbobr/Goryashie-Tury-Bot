@@ -4,6 +4,7 @@ import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMes
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
+let memberStatus = 'member';
 const tvHotels = { 1: ['ALPHA RESORT', '4.8', 5], 2: ['BETA HOTEL', '4.2', 4], 3: ['GAMMA INN', '3.8', 3], 4: ['LOW HOTEL', '3.2', 3] };
 const tvResult = { data: {
   status: { progress: 100, finished: 1 },
@@ -49,6 +50,7 @@ globalThis.fetch = async (url, o) => {
     return Response.json({ ok: true, result: { message_id: ++msgId } });
   }
   sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
+  if (url.endsWith('getChatMember')) return Response.json({ ok: true, result: { status: memberStatus } });
   return Response.json({ ok: true, result: { message_id: ++msgId } });
 };
 const kv = new Map();
@@ -370,4 +372,24 @@ assert.equal(sent.filter(m => m.reply_markup?.keyboard?.[0]?.[0]?.style === 'pri
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 99 }, message_id: 2, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 assert.equal(sent.filter(m => m.reply_markup?.keyboard).length, 0);
+// доступ: до 20 ноября — всем, с 21 ноября — только подписчикам канала
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 55 }, from: { id: 55 }, message_id: 1, text: '/start' } }, TG);
+assert.ok(!sent.some(m => m.method === 'getChatMember')); // сейчас бот открыт, подписку не проверяем
+env.OPEN_UNTIL = '2000-01-01T00:00:00+05:00'; // имитируем «21 ноября наступило»
+memberStatus = 'left';
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 56 }, from: { id: 56 }, message_id: 1, text: '/start' } }, TG);
+assert.deepEqual(sent.map(m => m.method), ['getChatMember', 'sendMessage']);
+assert.match(sent[1].text, /доступен подписчикам/);
+assert.equal(sent[1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/ch');
+sent.length = 0;
+await post('/tg', { callback_query: { id: 'c', data: 'chk', from: { id: 56 }, message: { chat: { id: 56 }, message_id: 9 } } }, TG);
+assert.equal(sent.find(m => m.method === 'answerCallbackQuery').show_alert, true); // не подписан — подсказка, подбор не начинаем
+assert.ok(!sent.some(m => m.method === 'sendMessage'));
+memberStatus = 'member';
+sent.length = 0;
+await post('/tg', { callback_query: { id: 'c', data: 'chk', from: { id: 56 }, message: { chat: { id: 56 }, message_id: 9 } } }, TG);
+assert.match(sent.find(m => m.method === 'sendMessage').text, /аэропорт/); // подписан — начинается подбор
+delete env.OPEN_UNTIL;
 console.log('OK');
