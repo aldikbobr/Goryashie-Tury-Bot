@@ -46,8 +46,8 @@ globalThis.fetch = async (url, o) => {
   }
   if (o.body instanceof FormData) { // фото файлом
     const f = Object.fromEntries(o.body.entries());
-    sent.push({ method: url.split('/').pop(), upload: true, size: f.photo.size, caption: f.caption, chat_id: f.chat_id, reply_markup: JSON.parse(f.reply_markup) });
-    return Response.json({ ok: true, result: { message_id: ++msgId } });
+    sent.push({ method: url.split('/').pop(), upload: true, size: f.photo.size, caption: f.caption, chat_id: f.chat_id, reply_markup: f.reply_markup ? JSON.parse(f.reply_markup) : undefined });
+    return Response.json({ ok: true, result: { message_id: ++msgId, photo: [{ file_id: 'small' }, { file_id: 'DIV' }] } });
   }
   sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
   if (url.endsWith('getChatMember')) return Response.json({ ok: true, result: { status: memberStatus } });
@@ -148,7 +148,9 @@ await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
 assert.match(sent[1].text, /Вылет: Астана\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
-assert.match(sent[2].text, /🟦{10}\n👇 <b>Последняя подборка<\/b>/u); // синий разделитель перед каждой свежей подборкой
+assert.ok(sent[2].upload && sent[2].method === 'sendPhoto' && sent[2].size > 100); // синяя полоса картинкой на всю ширину
+assert.match(sent[2].caption, /👇 <b>Последняя подборка<\/b>/u);
+assert.equal(kv.get('divider'), 'DIV'); // файл принят один раз, дальше по file_id
 assert.match(sent[3].text, /Ищу туры/);
 assert.equal(sent[4].method, 'deleteMessage');
 // в поиск Tourvisor ушли параметры клиента
@@ -166,11 +168,13 @@ assert.ok(!sent.some(m => /LOW HOTEL/.test(m.text || ''))); // рейтинг 3,
 const hb = new URL(groups[0].reply_markup.inline_keyboard[0][0].url).searchParams;
 assert.deepEqual([hb.get('x_hotel_codes'), hb.get('s_j_date_from'), hb.get('s_nights_from')], ['1', '06.12.2026', '7']);
 assert.equal(new URL(groups[0].reply_markup.inline_keyboard.at(-1)[0].url).searchParams.get('s_rating'), '5');
-const photos = sent.filter(m => m.method === 'sendPhoto');
+const photos = sent.filter(m => m.method === 'sendPhoto' && !m.upload); // без разделителя
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
-assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nТуристы: 2 взр\./);
-assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
+assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard.flat().at(-1).url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nТуристы: 2 взр\./);
+assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['👆 Просмотреть подобранный тур', '📩 Отправить запрос менеджеру']);
+const goBtn = sent.at(-1).reply_markup.inline_keyboard[0][0];
+assert.equal(goBtn.style, 'primary'); // синяя кнопка; кнопки «Подобрать тур» здесь нет
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
 // второй поиск идёт с фильтром Tourvisor «Только для взрослых» (services=48): в общую выдачу самых дешёвых отелей такие отели почти не попадают
 assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams.get('services')), [null, '3']); // в проверке едут с ребёнком: «Мини-клуб»; для взрослых — 48
@@ -178,6 +182,11 @@ const cmsg = sent.find(m => /ДЕТСКАЯ КОНЦЕПЦИЯ/.test(m.text || '
 assert.match(cmsg.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n─+\n/); // тонкое подчёркивание под названием подгруппы
 assert.match(cmsg.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n─+\n/);
 const resultIds = [msgId - 11, ...Array.from({ length: 9 }, (_, i) => msgId - 8 + i)]; // 3 по рейтингу, 3 по звёздности, раздел концепции (из отдельного поиска), фото тура, кнопка заявки
+assert.equal(goBtn.callback_data, 'go:' + resultIds[0]); // кнопка ведёт на разделитель — начало подборки
+const nBefore = sent.length;
+await post('/tg', { callback_query: { id: 'g', data: goBtn.callback_data, from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+assert.deepEqual(sent.slice(nBefore).find(m => m.method === 'sendMessage').reply_parameters.message_id, resultIds[0]); // ответ цитатой на разделитель: нажатие на цитату открывает начало
+resultIds.push(msgId); // это сообщение тоже уберётся при новом подборе
 assert.deepEqual(sent.slice(8, 11).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
 const hx = [{ name: 'A', stars: 5, rating: 4.6, price: 1, adult: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }, { name: 'B', stars: 4, rating: 4.2, price: 2, kids: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }];
 const cm = k => conceptMessages({ k, a: '2', ages: [], c: '0', n: '1', p: '0', f: '*', r: '', d: '0' }, new Date('2026-11-12'), hx);
@@ -232,7 +241,7 @@ wizardId = msgId;
 await wizard('Петропавловск');
 assert.match(sent[1].text, /Вылет: Петропавловск/);
 assert.equal(new URL(sent.find(m => /Подборки по рейтингу/.test(m.text || '')).reply_markup.inline_keyboard[0][0].url).searchParams.get('s_flyfrom'), '98');
-assert.ok(!sent.some(m => m.method === 'sendPhoto'));
+assert.ok(!sent.some(m => m.method === 'sendPhoto' && !/Последняя подборка/.test(m.caption || ''))); // фото туров нет, только разделитель
 assert.match(sent.at(-1).text, /Горящих туров по этим параметрам сейчас нет/);
 tvMode = 'ok'; tvCalls.length = 0;
 for (const k of kv.keys()) if (k.startsWith('q2:')) kv.delete(k);
