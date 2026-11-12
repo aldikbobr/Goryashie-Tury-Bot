@@ -198,7 +198,8 @@ export function searchLink(w, now, rating, hotel) {
 const TV_HEADERS = { Referer: 'https://tourvisor.ru/search.php' };
 const GROUPS = [['4,5–5', 4.5, 99, 5], ['4–4,5', 4.0, 4.5, 4], ['3,7–4', 3.7, 4.0, 3]]; // название, от, до (не включая), s_rating для ссылки
 
-export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(r, ms))) {
+// services — фильтр Tourvisor по услугам отеля (48 = «Только для взрослых», 3 = «Мини-клуб»); без него поиск отдаёт ~30 самых дешёвых отелей
+export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(r, ms)), services = '') {
   const r = range(w, now);
   const p = new URLSearchParams({
     datefrom: r.from, dateto: r.to, nightsfrom: r.nMin, nightsto: r.nMax, adults: w.a, child: +w.k || 0,
@@ -208,6 +209,7 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
   });
   w.ages.forEach((a, i) => p.set(`childage${i + 1}`, a === '0' ? 1 : a));
   if (w.r && w.r !== '*') p.set('regions', w.r);
+  if (services) p.set('services', services);
   const start = await fetch('https://tourvisor.ru/xml/modsearch.php?' + p, { headers: TV_HEADERS }).then(x => x.json());
   const id = start?.result?.requestid;
   if (!id) throw new Error('нет requestid: ' + JSON.stringify(start).slice(0, 100));
@@ -226,13 +228,14 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
   return [...best.values()].map(h => {
     const d = data.decode.hotels[h.id] || {};
     const descr = String(d.desc || '');
-    const adult = ADULT_RE.test(descr); // концепция только по описанию отеля: у Tourvisor отдельного признака нет
-    return { ...h, name: d.name || 'Отель', rating: parseFloat(d.rating) || 0, stars: +d.stars || 0, region: d.region || '', meal: data.decode.meal?.[h.ml]?.nameshort || '', adult, kids: !adult && KIDS_RE.test(descr) };
+    const sv = String(d.services || '').split(','); // услуги отеля по справочнику Tourvisor: 48 «Только для взрослых», 1–4 и 6 — детские
+    const adult = sv.includes('48') || ADULT_RE.test(descr);
+    return { ...h, name: d.name || 'Отель', rating: parseFloat(d.rating) || 0, stars: +d.stars || 0, region: d.region || '', meal: data.decode.meal?.[h.ml]?.nameshort || '', adult, kids: !adult && (['1', '2', '3', '4', '6'].some(x => sv.includes(x)) || KIDS_RE.test(descr)) };
   });
 }
 
 const ADULT_RE = /только для взрослых|adults? only|(?:^|\D)(?:16|18)\s?\+|гостей старше (?:16|18)/i;
-const KIDS_RE = /аквапарк|водные горки|водных горок|мини-клуб|детск(?:ий|ая|ое|ой|ую|ие|их) (?:клуб|площадк|бассейн|горк|анимац|меню|программ|комнат)|для детей/i;
+const KIDS_RE = /аквапарк|мини-клуб|детск(?:ий|ая|ое|ой|ую|ие|их) (?:клуб|площадк|анимац|меню|программ)/i;
 
 export function groupHotels(hotels) {
   return GROUPS.map(([title, from, to, rating]) => ({
@@ -260,14 +263,15 @@ const cheapest3 = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3
 const starGroups = hotels => STAR_GROUPS.map(([title, s]) => ({ head: `🌟 <b>${title}</b>`, rating: 0, hotels: cheapest3(hotels.filter(h => h.stars === s && h.rating >= 3.7)) }));
 
 // раздел концепции: одна шапка с чёрточками, внутри та же разбивка — рейтинг и звёздность, только по отелям этой концепции
-export function conceptMessages(w, now, hotels) {
+const THIN = '───────────────'; // тонкое подчёркивание под названием подгруппы внутри раздела
+export function conceptMessages(w, now, hotels, concept = []) {
   const kids = +w.k > 0;
-  const own = hotels.filter(h => (kids ? h.kids : h.adult));
+  const own = [...new Map([...hotels.filter(h => (kids ? h.kids : h.adult)), ...concept].map(h => [h.id, h])).values()]; // отели из отдельного поиска по концепции + подходящие из общего
   const subs = [...groupHotels(own).map(g => ({ ...g, head: ratingTitle(g) })), ...starGroups(own)].filter(g => g.hotels.length);
   const head = groupHeader(kids ? '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>' : '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>') + '\n';
   const out = [];
   for (const g of subs) {
-    const text = g.head + '\n' + g.hotels.map((h, i) => hotelCard(h, i, h.region)).join('\n\n');
+    const text = g.head + '\n' + THIN + '\n' + g.hotels.map((h, i) => hotelCard(h, i, h.region)).join('\n\n');
     const kb = g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]);
     const last = out.at(-1);
     if (last && last.text.length + text.length < 3500) { last.text += '\n\n' + text; last.kb.push(...kb); } // лимит Telegram 4096 знаков
@@ -288,13 +292,16 @@ function groupMessage(w, now, g) {
 }
 
 // подборки по рейтингу: результат поиска хранится 30 минут, чтобы не искать одно и то же повторно
+// hotels — общий поиск; concept — отдельный поиск только по отелям нужной концепции (взрослые: «Только для взрослых», с детьми: «Мини-клуб»),
+// иначе в общую выдачу самых дешёвых отелей они почти не попадают. Сбой второго поиска не ломает основной.
 async function ratingSelections(env, w, now) {
-  const key = 'q:' + [w.d, w.a,w.k, w.ages.join('.'), w.f, w.c, w.r, w.n, w.p, range(w, now).from].join(':');
+  const key = 'q2:' + [w.d, w.a, w.k, w.ages.join('.'), w.f, w.c, w.r, w.n, w.p, range(w, now).from].join(':');
   const cached = await env.TOURS.get(key);
   if (cached) return JSON.parse(cached);
-  const hotels = await tvSearch(w, now);
-  await env.TOURS.put(key, JSON.stringify(hotels), { expirationTtl: 1800 });
-  return hotels;
+  const [hotels, concept] = await Promise.all([tvSearch(w, now), tvSearch(w, now, undefined, +w.k ? '3' : '48').catch(() => [])]);
+  const res = { hotels, concept };
+  await env.TOURS.put(key, JSON.stringify(res), { expirationTtl: 1800 });
+  return res;
 }
 
 // сообщение владельцу бота о сбое поиска — не чаще раза в 6 часов
@@ -443,8 +450,8 @@ async function results(env, w, now, chat_id, data, sum) {
     const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
     let groups = null;
     try {
-      const hotels = await ratingSelections(env, w, now);
-      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(conceptMessages(w, now, hotels)); // рейтинг → звёздность → концепция, затем горящие
+      const { hotels, concept } = await ratingSelections(env, w, now);
+      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(conceptMessages(w, now, hotels, concept)); // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }

@@ -169,7 +169,12 @@ assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['ht
 assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nТуристы: 2 взр\./);
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
-const resultIds = Array.from({ length: 8 }, (_, i) => msgId - 7 + i); // 3 подборки по рейтингу, 3 по звёздности, фото тура, кнопка заявки
+// второй поиск идёт с фильтром Tourvisor «Только для взрослых» (services=48): в общую выдачу самых дешёвых отелей такие отели почти не попадают
+assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams.get('services')), [null, '3']); // в проверке едут с ребёнком: «Мини-клуб»; для взрослых — 48
+const cmsg = sent.find(m => /ДЕТСКАЯ КОНЦЕПЦИЯ/.test(m.text || ''));
+assert.match(cmsg.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n─+\n/); // тонкое подчёркивание под названием подгруппы
+assert.match(cmsg.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n─+\n/);
+const resultIds = Array.from({ length: 9 }, (_, i) => msgId - 8 + i); // 3 по рейтингу, 3 по звёздности, раздел концепции (из отдельного поиска), фото тура, кнопка заявки
 assert.deepEqual(sent.slice(7, 10).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
 const hx = [{ name: 'A', stars: 5, rating: 4.6, price: 1, adult: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }, { name: 'B', stars: 4, rating: 4.2, price: 2, kids: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }];
 const cm = k => conceptMessages({ k, a: '2', ages: [], c: '0', n: '1', p: '0', f: '*', r: '', d: '0' }, new Date('2026-11-12'), hx);
@@ -195,7 +200,7 @@ await wizard();
 assert.equal(tvCalls.filter(u => !u.includes('listdev')).length, 0); // списки стран и курортов — не поиск
 
 // Tourvisor заблокировал: клиенту — ссылки, владельцу — сообщение о сбое
-for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k); // убираем сохранённые результаты поиска
+for (const k of kv.keys()) if (k.startsWith('q2:')) kv.delete(k); // убираем сохранённые результаты поиска
 tvMode = 'down';
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 60, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
@@ -227,7 +232,7 @@ assert.equal(new URL(sent.find(m => /Подборки по рейтингу/.tes
 assert.ok(!sent.some(m => m.method === 'sendPhoto'));
 assert.match(sent.at(-1).text, /Горящих туров по этим параметрам сейчас нет/);
 tvMode = 'ok'; tvCalls.length = 0;
-for (const k of kv.keys()) if (k.startsWith('q:')) kv.delete(k);
+for (const k of kv.keys()) if (k.startsWith('q2:')) kv.delete(k);
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 63, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
 wizardId = msgId;
