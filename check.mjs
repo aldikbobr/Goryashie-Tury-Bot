@@ -320,6 +320,12 @@ await worker.fetch(new Request('https://x/run?job=evening', { method: 'POST', he
 assert.equal(sent.find(m => m.chat_id === '@ch').method, 'sendMessage'); // пост вышел без картинки
 assert.match(sent.find(m => m.chat_id === '99').text, /Вечерняя картинка не нарисовалась/); // владельцу — сообщение
 
+// удаление ошибочного поста бота в канале
+sent.length = 0;
+await worker.fetch(new Request('https://x/run?job=delete&id=24', { method: 'POST', headers: { 'x-secret': 's' } }), env, ctx);
+assert.deepEqual([sent[0].method, sent[0].chat_id, sent[0].message_id], ['deleteMessage', '@ch', 24]);
+assert.equal(sent.length, 1);
+
 // горящие туры с открытой страницы Tourvisor: разбор карточек, повтор отбрасывается
 const ph = parseHot(HOT_HTML, 'Астана');
 assert.equal(ph.length, 2);

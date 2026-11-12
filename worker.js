@@ -722,6 +722,8 @@ export default {
       const q = new URL(req.url).searchParams;
       // to=admin — прислать пост только владельцу (предпросмотр), а не в канал
       const target = q.get('to') === 'admin' ? { ...env, CHANNEL_ID: await env.TOURS.get('admin') } : env;
+      // /run?job=delete&id=<номер поста> — убрать ошибочно опубликованный пост бота в канале
+      if (q.get('job') === 'delete') return Response.json(await tg(env, 'deleteMessage', { chat_id: env.CHANNEL_ID, message_id: Number(q.get('id')) }));
       return Response.json(await runChannel(target, q.get('job')));
     }
     return new Response('Not found', { status: 404 });
