@@ -282,13 +282,13 @@ export function conceptMessages(w, now, hotels, concept = []) {
   return out;
 }
 
-function groupMessage(w, now, g) {
+function groupMessage(w, now, g, lead) {
   const cards = g.hotels.map((h, i) => hotelCard(h, i, h.region));
   return {
     text: groupHeader(g.head || ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
     kb: [
       ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]),
-      [{ text: 'Все варианты на Tourvisor', url: searchLink(w, now, g.rating) }],
+      ...(lead ? [[{ text: '📩 Написать менеджеру', url: lead }]] : []),
     ],
   };
 }
@@ -504,6 +504,7 @@ async function onTelegram(req, env, ctx) {
 // итог подбора: 3 подборки по рейтингу (поиск Tourvisor; при сбое — ссылки) + горящие туры + заявка менеджеру
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
+  const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`; // «Написать менеджеру» с запросом клиента
   await track(env, 'search', chat_id, [w.c === '*' ? 'Любая страна' : COUNTRIES[+w.c], DEPARTURES[+w.d][0], +w.k ? 'с детьми' : 'взрослые'].join('|'));
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
   await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
@@ -513,7 +514,7 @@ async function results(env, w, now, chat_id, data, sum) {
     try {
       const { hotels, concept } = await ratingSelections(env, w, now);
       const showConcept = (await getCfg(env)).concept !== false; // выключается в пульте
-      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(showConcept ? conceptMessages(w, now, hotels, concept) : []); // рейтинг → звёздность → концепция, затем горящие
+      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g, env.CONTACT_URL && lead)).concat(showConcept ? conceptMessages(w, now, hotels, concept) : []); // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }
@@ -532,7 +533,6 @@ async function results(env, w, now, chat_id, data, sum) {
   }
   const list = matches(w, data, now); // горящие туры из кабинета — только выбранного аэропорта
   for (const t of list) { const r = await sendTour(env, chat_id, t, data.updated); if (r.ok) ids.push(r.result.message_id); }
-  const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`;
   await send({
     text: (list.length
       ? '🔥 Выше — горящие туры по вашему запросу. Цены указаны за размещение из подборки туроператора (обычно 2 взрослых), точную цену на ваш состав посчитает менеджер.'

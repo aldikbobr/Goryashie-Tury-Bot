@@ -173,7 +173,13 @@ assert.ok(!sent.some(m => /LOW HOTEL/.test(m.text || ''))); // рейтинг 3,
 // кнопка отеля ведёт на этот отель, дату и ночи; последняя — все варианты группы
 const hb = new URL(groups[0].reply_markup.inline_keyboard[0][0].url).searchParams;
 assert.deepEqual([hb.get('x_hotel_codes'), hb.get('s_j_date_from'), hb.get('s_nights_from')], ['1', '06.12.2026', '7']);
-assert.equal(new URL(groups[0].reply_markup.inline_keyboard.at(-1)[0].url).searchParams.get('s_rating'), '5');
+// последняя кнопка каждой подборки — «Написать менеджеру» (вместо «Все варианты на Tourvisor») с запросом клиента
+for (const g of groups) {
+  const last = g.reply_markup.inline_keyboard.at(-1)[0];
+  assert.equal(last.text, '📩 Написать менеджеру');
+  assert.match(decodeURIComponent(last.url), /^https:\/\/wa\.me\/1\?text=Здравствуйте! Подберите, пожалуйста, тур\.\nВылет: Астана/);
+}
+assert.ok(!sent.some(m => JSON.stringify(m.reply_markup || '').includes('Все варианты')));
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
