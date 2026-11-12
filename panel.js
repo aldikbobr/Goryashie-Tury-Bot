@@ -95,6 +95,7 @@ function ctl(c) {
   $('concept').onchange = function () { save('concept', this.checked); };
   POSTS.forEach(function (p) { $('p_' + p[0]).onchange = function () { save('posts.' + p[0], this.checked); }; });
 }
+window.onhashchange = function () { location.reload(); }; // ключ в адресе поменяли — перечитываем
 $('d1').value = range[0]; $('d2').value = range[1];
 if (!KEY) $('msg').innerHTML = '<span class="err">Откройте пульт по полной ссылке с ключом после знака #</span>'; else load();
 </script></body></html>`;
