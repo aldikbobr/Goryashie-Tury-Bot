@@ -169,7 +169,39 @@ export async function loadCountries(env, dep) {
   }
   if (ids.length) AVAIL.set(dep, ids); // сбой не запоминаем — в следующий раз попробуем снова
 }
-const regionName = w => (REGIONS.get(countryId(w)) || []).find(([id]) => String(id) === w.r)?.[1];
+// Курорты выбираются до трёх сразу: в кнопках номера через точку («19.22»), t<номера> — отметки до «Готово», '*' — любой курорт
+const MAX_RESORTS = 3;
+const REGION_IDS = w => (/^[0-9]+(\.[0-9]+)*$/.test(w.r || '') ? w.r.split('.') : null);
+const rDone = w => w.r === '*' || REGION_IDS(w) !== null;
+const rDraft = w => (/^t[0-9.]*$/.test(w.r || '') ? w.r.slice(1).split('.').filter(Boolean) : []);
+const regionNames = w => (REGION_IDS(w) || []).map(id => (REGIONS.get(countryId(w)) || []).find(([x]) => String(x) === id)?.[1]).filter(Boolean);
+// Популярные курорты (у Tourvisor признака популярности нет — список составлен вручную; нет страны в списке — курорты по алфавиту)
+// ponytail: список зашит вручную, пополнять по мере надобности
+const POPULAR_RESORTS = {
+  'Турция': ['Анталья', 'Кемер', 'Аланья', 'Белек', 'Сиде', 'Бодрум', 'Мармарис', 'Стамбул', 'Фетхие', 'Дидим'],
+  'Египет': ['Шарм-эль-Шейх', 'Хургада', 'Дахаб', 'Марса Алам', 'Таба'],
+  'Таиланд': ['Пхукет', 'Паттайя', 'Самуи', 'Краби', 'Као Лак', 'Бангкок'],
+  'ОАЭ': ['Дубай', 'Шарджа', 'Рас-эль-Хайма', 'Абу-Даби', 'Фуджейра', 'Аджман'],
+  'Вьетнам': ['Нячанг', 'Фукуок', 'Дананг', 'Фантьет', 'Хошимин'],
+  'Китай': ['Хайнань', 'Пекин', 'Шанхай', 'Гонконг'],
+  'Греция': ['Крит - Ираклион', 'Родос', 'Корфу', 'Кос', 'Халкидики', 'Закинф', 'Санторини'],
+  'Кипр': ['Айя Напа', 'Лимассол', 'Пафос', 'Ларнака', 'Протарас'],
+  'Шри-Ланка': ['Бентота', 'Коломбо', 'Негомбо', 'Галле', 'Хиккадува'],
+  'Индонезия': ['Бали', 'Ломбок', 'Бинтан'],
+  'Россия': ['Сочи', 'Красная Поляна', 'Москва/Подмосковье', 'Санкт-Петербург', 'Анапа', 'Крым', 'Казань', 'Алтай', 'Байкал'],
+  'Казахстан': ['Алматы', 'Боровое', 'Астана', 'Актау'],
+  'Грузия': ['Батуми', 'Тбилиси', 'Гудаури', 'Бакуриани'],
+  'Доминикана': ['Пунта Кана', 'Ла Романа', 'Бока Чика'],
+  'Индия': ['Север Гоа', 'Юг Гоа', 'Центр Гоа'],
+};
+// порядок курортов: сначала с горящими турами, затем популярные, затем остальные
+export function orderResorts(country, regs, isHot) {
+  const pop = (POPULAR_RESORTS[country] || []).map(x => x.toLowerCase());
+  const rank = ([, name]) => { const i = pop.indexOf(name.toLowerCase()); return i < 0 ? 999 : i; };
+  const group = r => (isHot(r[1]) ? 0 : rank(r) < 999 ? 1 : 2);
+  return regs.map((r, i) => [r, i]).sort(([a, i], [b, j]) => group(a) - group(b) || (group(a) < 2 ? rank(a) - rank(b) : 0) || i - j).map(x => x[0]);
+}
+const POPULAR_COUNTRIES = 7; // первые 7 в списке COUNTRIES — популярные направления
 
 // даты и ночи для Tourvisor: вылеты с завтрашнего дня, не больше 21 дня (лимит Tourvisor)
 function range(w, now) {
@@ -194,7 +226,7 @@ export function searchLink(w, now, rating, hotel) {
     s_j_date_from: hotel ? hotel.date : r.from, s_j_date_to: hotel ? hotel.date : r.to, s_rating: rating,
   });
   if (hotel) p.set('x_hotel_codes', hotel.id);
-  if (w.r && w.r !== '*') p.set('s_region_to', w.r);
+  if (REGION_IDS(w)?.length === 1) p.set('s_region_to', w.r); // у ссылки Tourvisor — один курорт
   if (+w.k) { p.set('s_child', w.k); w.ages.forEach((a, i) => p.set(`s_child_age_${i + 1}`, a === '0' ? 1 : a)); }
   if (w.f !== '*') p.set('s_meal', MEAL_IDS[+w.f]); // Tourvisor ищет «и лучше»
   return 'https://tourvisor.ru/search.php?' + p;
@@ -215,7 +247,7 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
     directflight: 0, regular: 1, pricefrom: bud ? bud[1] : 0, priceto: bud ? bud[2] : 0, formmode: 0, origincountry: 3, pricetype: 0,
   });
   w.ages.forEach((a, i) => p.set(`childage${i + 1}`, a === '0' ? 1 : a));
-  if (w.r && w.r !== '*') p.set('regions', w.r);
+  if (REGION_IDS(w)) p.set('regions', REGION_IDS(w).join(','));
   if (services) p.set('services', services);
   if (extra.stars) p.set('stars', extra.stars); // категория отеля: одна (в списке через запятую Tourvisor работает неверно)
   const start = await fetch('https://tourvisor.ru/xml/modsearch.php?' + p, { headers: TV_HEADERS }).then(x => x.json());
@@ -400,7 +432,7 @@ function summary(w, data, now) {
   if (beachDone(w)) lines.push('Пляж: ' + beachText(w));
   if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
-  if (w.r && w.c !== '*') lines.push('Курорт: ' + (w.r === '*' ? 'любой' : regionName(w) || '—'));
+  if (rDone(w) && w.c !== '*') lines.push('Курорт: ' + (w.r === '*' ? 'любой' : regionNames(w).join(', ') || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
   return lines.join('\n');
@@ -436,14 +468,14 @@ function step(w, data, now) {
     };
   }
   if (!rtDone(w)) {
-    // рейтинг: тоже можно выбрать несколько групп сетки; «От 3,7 до 5» и «Любой рейтинг» — сразу готовый выбор
+    // рейтинг: тоже можно выбрать несколько групп сетки; «Любой рейтинг» — сразу готовый выбор
     const cur = draft(w.rt);
     const tog = d => 't' + [...flip(cur, d)].sort().join('');
     return {
       text: head + 'Рейтинг отеля (можно выбрать несколько и нажать «Готово»):',
       kb: [...RATING_OPTS.map(([text, d]) => [{ text: (cur.includes(d) ? '✅ ' : '⬜ ') + text, callback_data: encode({ ...w, rt: tog(d) }) }]),
         [{ text: 'Готово ▶', callback_data: encode({ ...w, rt: cur || '*' }) }],
-        [pick(w, 'rt', { text: 'От 3,7 до 5', v: 'r' }), pick(w, 'rt', { text: 'Любой рейтинг', v: '*' })],
+        [pick(w, 'rt', { text: 'Любой рейтинг', v: '*' })],
         back(w, { ...w, st: '' })],
     };
   }
@@ -466,18 +498,23 @@ function step(w, data, now) {
     // 🔥 — по этой стране сейчас есть горящие туры
     const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
     const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
-    const btns = COUNTRIES.flatMap((c, i) => (ok.length && !ok.includes(COUNTRY_IDS[c]) ? [] : [pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) })]));
+    const rank = ([c, i]) => (hot.has(c) ? 0 : i < POPULAR_COUNTRIES ? 1 : 2); // сначала с горящими, потом популярные, потом остальные (внутри — по порядку списка)
+    const btns = COUNTRIES.map((c, i) => [c, i]).filter(([c]) => !(ok.length && !ok.includes(COUNTRY_IDS[c]))).sort((a, b) => rank(a) - rank(b) || a[1] - b[1])
+      .map(([c, i]) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3), back(w, { ...w, f: '' })] };
   }
-  if (!w.r) {
+  if (!rDone(w)) {
     const regs = w.c === '*' ? [] : REGIONS.get(countryId(w)) || [];
     if (!regs.length) return step({ ...w, r: '*' }, data, now); // курортов нет — шаг пропускаем
     // 🔥 — по этому курорту сейчас есть горящие туры (название курорта ищем в тексте тура, как в matches)
     const hotTours = data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0] && t.country === COUNTRIES[+w.c]);
     const isHot = name => hotTours.some(t => (t.title + ' ' + t.descr).toLowerCase().includes(name.toLowerCase().slice(0, 5)));
+    const cur = rDraft(w); // отмеченные курорты (не больше трёх)
+    const flipR = id => 't' + (cur.includes(id) ? cur.filter(x => x !== id) : cur.length < MAX_RESORTS ? [...cur, id] : cur).join('.');
     return {
-      text: head + 'Выберите курорт (🔥 — есть горящие туры):',
-      kb: [[pick(w, 'r', { text: 'Любой курорт', v: '*' })], ...rows(regs.map(([id, name]) => pick(w, 'r', { text: (isHot(name) ? '🔥 ' : '') + name, v: String(id) })), 3), back(w, { ...w, c: '' })],
+      text: head + `Выберите курорты — до ${MAX_RESORTS}, выбрано ${cur.length} (🔥 — есть горящие туры), затем «Готово»:`,
+      kb: [...rows(orderResorts(COUNTRIES[+w.c], regs, isHot).map(([id, name]) => ({ text: (cur.includes(String(id)) ? '✅ ' : '⬜ ') + (isHot(name) ? '🔥 ' : '') + name, callback_data: encode({ ...w, r: flipR(String(id)) }) })), 2),
+        [{ text: 'Готово ▶', callback_data: encode({ ...w, r: cur.join('.') || '*' }) }, pick(w, 'r', { text: 'Любой курорт', v: '*' })], back(w, { ...w, c: '' })],
     };
   }
   if (!w.n) return { text: head + 'Сколько ночей?', kb: [...rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2), back(w, w.c !== '*' && (REGIONS.get(countryId(w)) || []).length ? { ...w, r: '' } : { ...w, c: '' })] }; // у страны нет списка курортов (шаг пропущен) — назад сразу к стране
@@ -488,12 +525,12 @@ function step(w, data, now) {
 export function matches(w, data, now) {
   const country = w.c === '*' ? null : countriesOf(data)[+w.c];
   // курорт в горящих турах указан только в тексте: «Фуджейра» → ищем «фудже» (ловит и «в Фуджейру»)
-  const resort = w.r && w.r !== '*' && regionName(w)?.toLowerCase().slice(0, 5);
+  const resorts = regionNames(w).map(n => n.toLowerCase().slice(0, 5));
   const [, nMin, nMax] = NIGHTS[+w.n];
   const [, from, to] = periods(now)[+w.p];
   return data.items.filter(t => {
     const { date, nights, meal } = tourInfo(t, now);
-    return depOf(t) === DEPARTURES[+w.d][0] && (!country || t.country === country) && (!resort || (t.title + ' ' + t.descr).toLowerCase().includes(resort)) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
+    return depOf(t) === DEPARTURES[+w.d][0] && (!country || t.country === country) && (!resorts.length || resorts.some(r => (t.title + ' ' + t.descr).toLowerCase().includes(r))) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
       && (w.f === '*' || meal === undefined || meal >= +w.f)
       && hotFits(w, t);
   }).sort((a, b) => a.price - b.price).slice(0, 3); // горящих — не больше трёх

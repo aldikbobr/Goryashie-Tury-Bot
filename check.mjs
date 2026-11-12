@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { astanaDay } from './stats.js';
 import { kompasUrl } from './kompas.js';
-import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, paramMessages, hotFits, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, paramMessages, hotFits, orderResorts, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -46,7 +46,7 @@ globalThis.fetch = async (url, o) => {
     if (tvMode === 'down') return new Response('Forbidden', { status: 403 });
     if (url.includes('type=country')) return Response.json({ lists: url.includes('cndep=98') ? { countries: { country: [{ id: 78 }, { id: 2 }] } } : {} }); // у Петропавловска — только Казахстан и Таиланд (для проверки)
     if (url.includes('listdev')) return Response.json({ lists: { regions: { region: [
-      { id: 6, name: 'Пхукет', parentid: 0 }, { id: 5, name: 'Паттайя', parentid: 0 }, { id: 600, name: 'Патонг', parentid: 6 }] } } });
+      { id: 6, name: 'Пхукет', parentid: 0 }, { id: 5, name: 'Паттайя', parentid: 0 }, { id: 600, name: 'Патонг', parentid: 6 }, { id: 7, name: 'Самуи', parentid: 0 }, { id: 8, name: 'Краби', parentid: 0 }, { id: 9, name: 'Чианг Май', parentid: 0 }] } } });
     return Response.json(url.includes('modsearch') ? { result: { requestid: 1 } } : tvResult);
   }
   if (o.body instanceof FormData) { // фото файлом
@@ -142,7 +142,7 @@ const wizard = async (city = 'Астана') => {
   await press('5'); assert.match(sent.at(-1).text, /Звёздность отеля/);
   assert.deepEqual(texts(), ['⬜ ⭐⭐⭐⭐⭐ 5 звёзд', '⬜ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды', 'Готово ▶', 'Любая звёздность', NB]);
   await press('Любая звёздность'); assert.match(sent.at(-1).text, /Рейтинг отеля/);
-  assert.deepEqual(texts(), ['⬜ 🟢 4,5–5', '⬜ 🟡 4–4,5', '⬜ 🟠 3,7–4', 'Готово ▶', 'От 3,7 до 5', 'Любой рейтинг', NB]);
+  assert.deepEqual(texts(), ['⬜ 🟢 4,5–5', '⬜ 🟡 4–4,5', '⬜ 🟠 3,7–4', 'Готово ▶', 'Любой рейтинг', NB]); // кнопки «От 3,7 до 5» нет
   await press('Любой рейтинг'); assert.match(sent.at(-1).text, /Пляж/);
   assert.deepEqual(texts(), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж', 'Готово ▶', NB]);
   await press('Готово ▶'); assert.match(sent.at(-1).text, /Питание/); // ничего не отмечено — любой пляж
@@ -151,13 +151,18 @@ const wizard = async (city = 'Астана') => {
   const countryBtns = texts().filter(t => t !== NB);
   if (city === 'Астана') assert.equal(countryBtns.length, 44); // «Любая страна» + 43 страны Tourvisor
   else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
-  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', hot + 'Таиланд', hot + 'ОАЭ']); // 🔥 — есть горящие туры (только вылет из Астаны)
-  await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
+  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 8), [hot + 'Таиланд', hot + 'ОАЭ', 'Турция', 'Египет', 'Россия', 'Китай', 'Вьетнам']); // 🔥 — есть горящие туры (только вылет из Астаны)
+  await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорты/);
   // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
   // 🔥 у курорта — по нему есть горящие туры (в проверке только вылет из Астаны)
-  assert.deepEqual(texts(), ['Любой курорт', hot + 'Пхукет', 'Паттайя', NB]);
-  assert.match(sent.at(-1).text, /Выберите курорт \(🔥 — есть горящие туры\)/);
-  await press(hot + 'Пхукет'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
+  // курорты: сначала с горящими (в проверке 🔥 Пхукет), затем популярные по списку, затем остальные; галочки, до трёх
+  assert.deepEqual(texts(), ['⬜ ' + hot + 'Пхукет', '⬜ Паттайя', '⬜ Самуи', '⬜ Краби', '⬜ Чианг Май', 'Готово ▶', 'Любой курорт', NB]);
+  assert.match(sent.at(-1).text, /Выберите курорты — до 3, выбрано 0 \(🔥 — есть горящие туры\)/);
+  await press('⬜ ' + hot + 'Пхукет'); assert.match(sent.at(-1).text, /выбрано 1/);
+  await press('⬜ Самуи'); assert.match(sent.at(-1).text, /выбрано 2/);
+  assert.deepEqual(texts().slice(0, 3), ['✅ ' + hot + 'Пхукет', '⬜ Паттайя', '✅ Самуи']);
+  await press('✅ Самуи'); assert.match(sent.at(-1).text, /выбрано 1/); // отметку можно снять
+  await press('Готово ▶'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
   await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
   await press('Ближайшие 2 недели');
 };
@@ -563,6 +568,20 @@ assert.ok(sent.some(m => /ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ/
 const wm = { k: '0', a: '2', ages: [], st: '54', rt: '02', by: '0', c: '0', n: '1', p: '0', f: '*', r: '*', d: '0', bd: '*' };
 pm = paramMessages(wm, new Date('2026-11-12'), [HH(1, 5, 4.8, 900000), HH(2, 4, 4.2, 800000), HH(3, 4, 3.8, 700000), HH(4, 3, 4.6, 600000), HH(5, 5, 4.2, 500000)], [], lead9);
 assert.deepEqual([...pm[0].text.matchAll(/<b>H(\d)<\/b>/g)].map(x => x[1]), ['3', '1']); // 5★ и 4★; рейтинг 4,5–5 или 3,7–4; 3★ и 4,2 не подходят
+
+// курорты: не больше трёх, порядок — горящие, популярные, остальные
+let mr = await step9('w:2:2:0::1:0:*:t6.5.7:0:*:*:*:0'); // уже отмечены три курорта
+assert.match(mr.text, /выбрано 3/);
+const lim = await go9(mr, '⬜ Краби'); // четвёртый не добавляется
+assert.match(lim?.text || mr.text, /выбрано 3/);
+mr = await go9(mr, 'Готово ▶'); assert.match(mr.text, /Курорт: Пхукет, Паттайя, Самуи\n/);
+assert.equal(orderResorts('Таиланд', [[1, 'Ко Чанг'], [2, 'Самуи'], [3, 'Пхукет'], [4, 'Краби']], n => n === 'Краби').map(r => r[1]).join(','), 'Краби,Пхукет,Самуи,Ко Чанг'); // горящий, потом популярные по списку, потом остальные
+assert.equal(orderResorts('Остров', [[1, 'Б'], [2, 'А']], () => false).map(r => r[1]).join(','), 'Б,А'); // страны нет в списке популярных — порядок Tourvisor
+// в поиск Tourvisor уходят все выбранные курорты
+for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
+tvCalls.length = 0; sent.length = 0;
+await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:6.5.7:0:*:*:*:0', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+assert.equal(new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams.get('regions'), '6,5,7');
 
 // ---- статистика и пульт ----
 const sdb = new DatabaseSync(':memory:');
