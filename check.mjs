@@ -123,24 +123,27 @@ const press = async label => {
   await post('/tg', { callback_query: { id: 'q', data: btn.callback_data, message: { chat: { id: 7 }, message_id: wizardId } } }, TG);
   assert.ok(btn.callback_data.length <= 64);
 };
+const NB = '◀️ Назад';
+const texts = () => sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
 const wizard = async (city = 'Астана') => {
   const hot = city === 'Астана' ? '🔥 ' : '';
   await press(city); assert.match(sent.at(-1).text, /Вылет: .*\n\n👉 Сколько взрослых/);
   await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
   await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
-  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2))]);
+  assert.deepEqual(texts(), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2)), NB]);
   await press('5'); assert.match(sent.at(-1).text, /Питание/);
-  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text),
-    ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено']);
+  assert.deepEqual(texts(), ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено', NB]);
   await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
-  const countryBtns = sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
+  const countryBtns = texts().filter(t => t !== NB);
   if (city === 'Астана') assert.equal(countryBtns.length, 44); // «Любая страна» + 43 страны Tourvisor
   else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
   if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 5), ['Турция', 'Египет', hot + 'Таиланд', hot + 'ОАЭ']); // 🔥 — есть горящие туры (только вылет из Астаны)
   await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорт/);
   // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
-  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['Любой курорт', 'Пхукет', 'Паттайя']);
-  await press('Пхукет'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
+  // 🔥 у курорта — по нему есть горящие туры (в проверке только вылет из Астаны)
+  assert.deepEqual(texts(), ['Любой курорт', hot + 'Пхукет', 'Паттайя', NB]);
+  assert.match(sent.at(-1).text, /Выберите курорт \(🔥 — есть горящие туры\)/);
+  await press(hot + 'Пхукет'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
   await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
   await press('Ближайшие 2 недели');
 };
@@ -409,4 +412,30 @@ assert.ok(!sent.some(m => m.method === 'deleteMessages'));
 assert.deepEqual(JSON.parse(kv.get('m:803')).map(x => x.ids[0]), [7, 92]);
 assert.equal(typeof (await worker.scheduled({ cron: '0 9 * * *' }, env, ctx)), 'undefined'); // расписание без ночной очистки: расписания и посты прежние
 await Promise.all(pending.splice(0));
+// «Назад» на каждом шаге: ответы до него сохраняются, заново начинать не нужно
+kv.set('kb2:900', '1');
+const step9 = async data => { sent.length = 0; await post('/tg', { callback_query: { id: 'b', data, message: { chat: { id: 900 }, message_id: 5 } } }, TG); return sent.find(m => m.method === 'editMessageText'); };
+const btn9 = (m, label) => m.reply_markup.inline_keyboard.flat().find(b => b.text === label);
+const go9 = async (m, label) => { const b = btn9(m, label); assert.ok(b, 'нет кнопки ' + label); return step9(b.callback_data); };
+let m9 = await step9('w:::::::::');
+assert.ok(!btn9(m9, NB)); // на первом шаге (аэропорт) назад не нужен
+m9 = await go9(m9, 'Астана'); assert.match(m9.text, /Сколько взрослых/);
+m9 = await go9(m9, '2'); assert.match(m9.text, /Сколько детей/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Вылет: Астана\n\n👉 Сколько взрослых/); // назад к взрослым, вылет сохранён
+m9 = await go9(m9, '2');
+m9 = await go9(m9, '2'); assert.match(m9.text, /Возраст 1-го/);
+m9 = await go9(m9, '4'); assert.match(m9.text, /Возраст 2-го/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Возраст 1-го/); // убран последний ответ (возраст 1-го ребёнка)
+m9 = await go9(m9, NB); assert.match(m9.text, /Сколько детей/); // с возраста 1-го — назад к числу детей
+m9 = await go9(m9, 'Без детей'); assert.match(m9.text, /Питание/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Сколько детей/); // без детей: из питания назад к числу детей
+m9 = await go9(m9, 'Без детей');
+m9 = await go9(m9, 'Любое'); assert.match(m9.text, /Выберите страну/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Питание/);
+m9 = await go9(m9, 'Любое');
+m9 = await go9(m9, 'Любая страна'); assert.match(m9.text, /Сколько ночей/); // курортов нет — шаг пропущен
+m9 = await go9(m9, NB); assert.match(m9.text, /Выберите страну/); // назад из «ночей» сразу к стране, не зависает
+m9 = await go9(m9, 'Любая страна');
+m9 = await go9(m9, '6–9 ночей'); assert.match(m9.text, /Когда хотите лететь/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Сколько ночей/);
 console.log('OK');

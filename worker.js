@@ -329,38 +329,44 @@ function summary(w, data, now) {
   return lines.join('\n');
 }
 
+// кнопка «Назад» на каждом шаге: возвращает к предыдущему вопросу, ответы до него сохраняются
+const back = (w, prev) => [{ text: '◀️ Назад', callback_data: encode(prev) }];
+
 // следующий вопрос; null — всё выбрано
 function step(w, data, now) {
   const head = (summary(w, data, now) ? summary(w, data, now) + '\n\n' : '') + '👉 ';
   if (!w.d) return { text: head + 'Из какого аэропорта вылет?', kb: rows(DEPARTURES.map(([name], i) => pick(w, 'd', { text: name, v: String(i) })), 2) };
-  if (!w.a) return { text: head + 'Сколько взрослых?', kb: rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4) };
-  if (!w.k) return { text: head + 'Сколько детей?', kb: rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4) };
+  if (!w.a) return { text: head + 'Сколько взрослых?', kb: [...rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4), back(w, { ...w, d: '' })] };
+  if (!w.k) return { text: head + 'Сколько детей?', kb: [...rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4), back(w, { ...w, a: '' })] };
   if (w.ages.length < +w.k) {
     // «до 2» (значение 0), затем 2…17 лет
     const btns = [0, ...Array.from({ length: 16 }, (_, i) => i + 2)].map(a => ({ text: a === 0 ? 'до 2' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
-    return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: rows(btns, 6) };
+    return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: [...rows(btns, 6), back(w, w.ages.length ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '', ages: [] })] };
   }
   if (!w.f) return {
     text: head + 'Питание (подберём это или лучше):',
-    kb: [[pick(w, 'f', { text: 'Любое', v: '*' })], ...rows(MEALS.map((m, i) => pick(w, 'f', { text: m, v: String(i) })), 2)],
+    kb: [[pick(w, 'f', { text: 'Любое', v: '*' })], ...rows(MEALS.map((m, i) => pick(w, 'f', { text: m, v: String(i) })), 2), back(w, +w.k ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '' })],
   };
   if (!w.c) {
     // 🔥 — по этой стране сейчас есть горящие туры
     const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
     const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
     const btns = COUNTRIES.flatMap((c, i) => (ok.length && !ok.includes(COUNTRY_IDS[c]) ? [] : [pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) })]));
-    return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3)] };
+    return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3), back(w, { ...w, f: '' })] };
   }
   if (!w.r) {
     const regs = w.c === '*' ? [] : REGIONS.get(countryId(w)) || [];
     if (!regs.length) return step({ ...w, r: '*' }, data, now); // курортов нет — шаг пропускаем
+    // 🔥 — по этому курорту сейчас есть горящие туры (название курорта ищем в тексте тура, как в matches)
+    const hotTours = data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0] && t.country === COUNTRIES[+w.c]);
+    const isHot = name => hotTours.some(t => (t.title + ' ' + t.descr).toLowerCase().includes(name.toLowerCase().slice(0, 5)));
     return {
-      text: head + 'Выберите курорт:',
-      kb: [[pick(w, 'r', { text: 'Любой курорт', v: '*' })], ...rows(regs.map(([id, name]) => pick(w, 'r', { text: name, v: String(id) })), 3)],
+      text: head + 'Выберите курорт (🔥 — есть горящие туры):',
+      kb: [[pick(w, 'r', { text: 'Любой курорт', v: '*' })], ...rows(regs.map(([id, name]) => pick(w, 'r', { text: (isHot(name) ? '🔥 ' : '') + name, v: String(id) })), 3), back(w, { ...w, c: '' })],
     };
   }
-  if (!w.n) return { text: head + 'Сколько ночей?', kb: rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2) };
-  if (!w.p) return { text: head + 'Когда хотите лететь?', kb: rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2) };
+  if (!w.n) return { text: head + 'Сколько ночей?', kb: [...rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2), back(w, w.c !== '*' && (REGIONS.get(countryId(w)) || []).length ? { ...w, r: '' } : { ...w, c: '' })] }; // у страны нет списка курортов (шаг пропущен) — назад сразу к стране
+  if (!w.p) return { text: head + 'Когда хотите лететь?', kb: [...rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2), back(w, { ...w, n: '' })] };
   return null;
 }
 
