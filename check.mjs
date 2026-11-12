@@ -148,7 +148,7 @@ await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
 assert.match(sent[1].text, /Вылет: Астана\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
-assert.match(sent[2].text, /🟦{10}\n👇 <b>Последняя подборка<\/b>/u); // синий разделитель перед каждой свежей подборкой
+assert.match(sent[2].text, /🟦{10}\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ<\/b>/u); // синий разделитель перед каждой свежей подборкой
 assert.match(sent[3].text, /Ищу туры/);
 assert.equal(sent[4].method, 'deleteMessage');
 // в поиск Tourvisor ушли параметры клиента
@@ -188,13 +188,12 @@ assert.match(adultMsg[0].text, /^━+\n🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИ
 assert.match(kidsMsg[0].text, /ДЕТСКАЯ КОНЦЕПЦИЯ[\s\S]*РЕЙТИНГ 4–4,5[\s\S]*ЧЕТЫРЕ ЗВЕЗДЫ/);
 assert.deepEqual(conceptMessages({ k: '0' }, new Date(), [{ stars: 3, rating: 4, price: 1 }]), []); // нет отелей концепции — раздела нет
 
-// «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
+// «Подобрать тур» начинает новую подборку, а готовая остаётся (хранятся последние три)
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 55, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
-assert.equal(sent[0].method, 'deleteMessages');
-assert.deepEqual(sent[0].message_ids.sort(), [wizardId, ...resultIds, 55].sort());
-assert.match(sent[1].text, /Из какого аэропорта/);
-assert.equal(sent.length, 2); // без повторного приветствия
+assert.ok(!sent.some(m => m.method === 'deleteMessages'));
+assert.match(sent[0].text, /Из какого аэропорта/);
+assert.equal(sent.length, 1); // без повторного приветствия
 wizardId = msgId;
 
 // тот же запрос повторно — берётся из сохранённого, Tourvisor не дёргаем
@@ -393,13 +392,21 @@ sent.length = 0;
 await post('/tg', { callback_query: { id: 'c', data: 'chk', from: { id: 56 }, message: { chat: { id: 56 }, message_id: 9 } } }, TG);
 assert.match(sent.find(m => m.method === 'sendMessage').text, /аэропорт/); // подписан — начинается подбор
 delete env.OPEN_UNTIL;
-// ночная очистка (00:00 по Астане = 19:00 UTC): подборки во всех чатах бота удаляются, записи в базе очищаются
-kv.set('m:701', JSON.stringify([1, 2, 3])); kv.set('m:702', JSON.stringify([4]));
-sent.length = 0;
-await worker.scheduled({ cron: '0 19 * * *' }, env, ctx);
+// хранятся последние три подборки: при четвёртой самая старая удаляется; начатая и брошенная подборка не считается
+const pick = async (chat, id) => { sent.length = 0; await post('/tg', { message: { chat: { id: chat }, from: { id: chat }, message_id: id, text: '🔎 Подобрать тур за 1 минуту' } }, TG); };
+kv.set('kb2:801', '1'); kv.set('kb2:802', '1'); kv.set('kb2:803', '1');
+kv.set('m:801', JSON.stringify([{ ids: [1], done: true }, { ids: [2], done: true }, { ids: [3], done: true }]));
+await pick(801, 90);
+assert.deepEqual(sent.filter(m => m.method === 'deleteMessages').map(m => m.message_ids), [[1]]); // четвёртая — первая удалена
+assert.deepEqual(JSON.parse(kv.get('m:801')).map(x => x.ids[0]), [2, 3, 90]); // остались последние три, четвёртая начата
+kv.set('m:802', JSON.stringify([{ ids: [5], done: true }, { ids: [6], done: false }]));
+await pick(802, 91);
+assert.deepEqual(sent.filter(m => m.method === 'deleteMessages').map(m => m.message_ids), [[6]]); // брошенная убрана, готовая осталась
+assert.deepEqual(JSON.parse(kv.get('m:802')).map(x => x.ids[0]), [5, 91]);
+kv.set('m:803', JSON.stringify([7, 8])); // старый формат записи
+await pick(803, 92);
+assert.ok(!sent.some(m => m.method === 'deleteMessages'));
+assert.deepEqual(JSON.parse(kv.get('m:803')).map(x => x.ids[0]), [7, 92]);
+assert.equal(typeof (await worker.scheduled({ cron: '0 9 * * *' }, env, ctx)), 'undefined'); // расписание без ночной очистки: расписания и посты прежние
 await Promise.all(pending.splice(0));
-const dels = sent.filter(m => m.method === 'deleteMessages' && String(m.chat_id).startsWith('70')); // другие чаты теста тоже очищаются
-assert.deepEqual(dels.map(m => [m.chat_id, m.message_ids]).sort(), [['701', [1, 2, 3]], ['702', [4]]].sort());
-assert.ok(![...kv.keys()].some(k => k.startsWith('m:')));
-assert.ok(!sent.some(m => m.method === 'sendMessage')); // в этот час ничего не публикуется
 console.log('OK');

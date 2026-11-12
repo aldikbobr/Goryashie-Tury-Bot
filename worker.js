@@ -377,32 +377,33 @@ export function matches(w, data, now) {
   }).sort((a, b) => a.price - b.price).slice(0, 5);
 }
 
-// сообщения последней подборки — их удаляем, когда клиент начинает новую
-const remember = async (env, chat_id, ids) => {
-  const old = JSON.parse((await env.TOURS.get('m:' + chat_id)) || '[]');
-  await env.TOURS.put('m:' + chat_id, JSON.stringify([...old, ...ids].slice(-100)), { expirationTtl: 3 * DAY / 1000 });
+// Сообщения по подборкам (поискам): m:<чат> = [{ ids: [...], done }]. Остаются последние 3 подборки: при четвёртой самая старая удаляется.
+const KEEP_SEARCHES = 3;
+const loadSearches = async (env, chat_id) => {
+  const v = JSON.parse((await env.TOURS.get('m:' + chat_id)) || '[]');
+  return v.length && typeof v[0] === 'number' ? [{ ids: v, done: true }] : v; // старый формат — один плоский список
+};
+const saveSearches = (env, chat_id, searches) => env.TOURS.put('m:' + chat_id, JSON.stringify(searches), { expirationTtl: 3 * DAY / 1000 });
+const deleteIds = async (env, chat_id, ids) => { for (let i = 0; i < ids.length; i += 100) await tg(env, 'deleteMessages', { chat_id, message_ids: ids.slice(i, i + 100) }); };
+
+// сообщения добавляются в текущую (последнюю) подборку; done = true, когда результаты показаны
+const remember = async (env, chat_id, ids, done = false) => {
+  const searches = await loadSearches(env, chat_id);
+  if (!searches.length) searches.push({ ids: [], done: false });
+  const cur = searches.at(-1);
+  cur.ids = [...cur.ids, ...ids].slice(-100);
+  if (done) cur.done = true;
+  await saveSearches(env, chat_id, searches);
 };
 
-// Ночью (00:00 по Астане) удаляем в чатах бота все сохранённые подборки, чтобы они не копились
-export async function cleanChats(env) {
-  let cursor, chats = 0, deleted = 0;
-  do {
-    const page = await env.TOURS.list({ prefix: 'm:', cursor });
-    for (const { name } of page.keys) {
-      const ids = JSON.parse((await env.TOURS.get(name)) || '[]');
-      for (let i = 0; i < ids.length; i += 100) await tg(env, 'deleteMessages', { chat_id: name.slice(2), message_ids: ids.slice(i, i + 100) });
-      await env.TOURS.delete(name);
-      chats++; deleted += ids.length;
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return { chats, deleted };
-}
-
-async function startWizard(env, chat_id, data, now) {
-  const old = JSON.parse((await env.TOURS.get('m:' + chat_id)) || '[]');
-  if (old.length) await tg(env, 'deleteMessages', { chat_id, message_ids: old });
-  await env.TOURS.delete('m:' + chat_id);
+async function startWizard(env, chat_id, data, now, extraIds = []) {
+  let searches = await loadSearches(env, chat_id);
+  const dropped = searches.filter(x => !x.done).flatMap(x => x.ids); // начатая, но не доведённая до результата подборка — не в счёт, убираем сразу
+  searches = searches.filter(x => x.done);
+  searches.push({ ids: [...extraIds], done: false });
+  if (searches.length > KEEP_SEARCHES) dropped.push(...searches.splice(0, searches.length - KEEP_SEARCHES).flatMap(x => x.ids)); // самая старая
+  await saveSearches(env, chat_id, searches);
+  if (dropped.length) await deleteIds(env, chat_id, dropped);
   const s = step(decode('w'), data, now);
   const r = await tg(env, 'sendMessage', { chat_id, text: s.text, reply_markup: { inline_keyboard: s.kb } });
   if (r.ok) await remember(env, chat_id, [r.result.message_id]);
@@ -482,8 +483,9 @@ async function onTelegram(req, env, ctx) {
     reply_markup: { keyboard: [[{ text: MENU_BUTTON, style: 'primary' }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
   });
   if (kbMsg?.ok) await env.TOURS.put(kbKey, '1');
-  if (u.message.text === MENU_BUTTON) await remember(env, chat_id, [u.message.message_id, ...(kbMsg?.ok ? [kbMsg.result.message_id] : [])]); // нажатие тоже убираем вместе со старой подборкой
-  await startWizard(env, chat_id, data, now);
+  // нажатие кнопки относится к новой подборке и удаляется вместе с ней
+  const pressIds = u.message.text === MENU_BUTTON ? [u.message.message_id, ...(kbMsg?.ok ? [kbMsg.result.message_id] : [])] : [];
+  await startWizard(env, chat_id, data, now, pressIds);
   return new Response('ok');
 }
 
@@ -491,7 +493,7 @@ async function onTelegram(req, env, ctx) {
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
-  await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>Последняя подборка</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
+  await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
   if (w.c !== '*') {
     const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
     let groups = null;
@@ -527,7 +529,7 @@ async function results(env, w, now, chat_id, data, sum) {
     parse_mode: 'HTML',
     reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
   });
-  await remember(env, chat_id, ids);
+  await remember(env, chat_id, ids, true); // подборка готова
 }
 
 // ---------- Канал: ежедневная подборка туров по всем направлениям ----------
@@ -746,7 +748,6 @@ async function postEvening(env, now) {
 }
 
 async function runChannel(env, job, now = new Date()) {
-  if (job === 'clean') return { ok: true, ...(await cleanChats(env)) };
   if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
   try {
     if (job === 'news') {
@@ -812,7 +813,7 @@ export default {
   // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
     // горящие туры обновляются с открытой страницы Tourvisor перед постами и днём
-    const jobs = { '0 10 * * *': ['news', 'scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'], '0 19 * * *': ['clean'] }[event.cron] || ['scrape', 'tours'];
+    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'] }[event.cron] || ['scrape', 'tours'];
     ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };
