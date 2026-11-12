@@ -1,5 +1,8 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import { astanaDay } from './stats.js';
 import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
@@ -50,6 +53,7 @@ globalThis.fetch = async (url, o) => {
     return Response.json({ ok: true, result: { message_id: ++msgId } });
   }
   sent.push({ method: url.split('/').pop(), ...JSON.parse(o.body) });
+  if (url.endsWith('getChatMemberCount')) return Response.json({ ok: true, result: 123 });
   if (url.endsWith('getChatMember')) return Response.json({ ok: true, result: { status: memberStatus } });
   return Response.json({ ok: true, result: { message_id: ++msgId } });
 };
@@ -438,4 +442,67 @@ m9 = await go9(m9, NB); assert.match(m9.text, /Выберите страну/); 
 m9 = await go9(m9, 'Любая страна');
 m9 = await go9(m9, '6–9 ночей'); assert.match(m9.text, /Когда хотите лететь/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Сколько ночей/);
+// ---- статистика и пульт ----
+const sdb = new DatabaseSync(':memory:');
+sdb.exec(readFileSync('schema.sql', 'utf8'));
+env.DB = { prepare: sql => { const st = sdb.prepare(sql); let b = []; const o = { bind: (...a) => { b = a; return o; }, run: async () => { st.run(...b); return {}; }, all: async () => ({ results: st.all(...b) }) }; return o; } };
+env.PANEL_KEY = 'secret-key';
+const today9 = astanaDay(new Date());
+const panelGet = (path, key) => worker.fetch(new Request('https://x' + path, { headers: key ? { 'x-key': key } : {} }), env, ctx);
+
+// события пишутся: «Старт», «Подобрать тур», готовая подборка; ссылки считаются
+await post('/tg', { message: { chat: { id: 501 }, from: { id: 501 }, message_id: 1, text: '/start' } }, TG);
+await post('/tg', { message: { chat: { id: 501 }, from: { id: 501 }, message_id: 2, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
+await post('/tg', { message: { chat: { id: 502 }, from: { id: 502 }, message_id: 1, text: '/start' } }, TG);
+kv.set('m:7', '[]');
+await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:*:0', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+const goRes = await panelGet('/go/bot/instagram');
+assert.equal(goRes.status, 302);
+assert.equal(goRes.headers.get('location'), 'https://t.me/HotToursAstana_bot');
+assert.equal((await panelGet('/go/channel/whatsapp')).headers.get('location'), 'https://t.me/ch');
+
+// пульт: страница открыта, данные только по ключу
+const page = await panelGet('/panel');
+assert.match(await page.text(), /Пульт · Горящие от ТурБота/);
+assert.equal((await panelGet(`/panel/api?from=${today9}&to=${today9}`)).status, 401);
+assert.equal((await panelGet(`/panel/api?from=${today9}&to=${today9}`, 'wrong')).status, 401);
+const rep = await (await panelGet(`/panel/api?from=${today9}&to=${today9}`, 'secret-key')).json();
+assert.equal(rep.users, 3); // 501, 502 и клиент проверки
+assert.equal(rep.searches, 1);
+assert.ok(rep.starts >= 2 && rep.presses >= 1);
+assert.deepEqual(rep.topCountries[0], ['Таиланд', 1]);
+assert.deepEqual(rep.topAirports[0], ['Астана', 1]);
+assert.deepEqual(rep.links.sort(), [['bot:instagram', 1], ['channel:whatsapp', 1]]);
+assert.equal(rep.subsNow, 123);
+assert.equal(rep.newUsers, 3);
+assert.equal(rep.cfg.access, 'auto');
+// период в прошлом — пусто
+const empty = await (await panelGet('/panel/api?from=2020-01-01&to=2020-01-02', 'secret-key')).json();
+assert.equal(empty.users, 0);
+
+// настройки из пульта
+const setCfgReq = (path, value) => worker.fetch(new Request('https://x/panel/api/set', { method: 'POST', headers: { 'x-key': 'secret-key' }, body: JSON.stringify({ path, value }) }), env, ctx).then(r => r.json());
+assert.equal((await setCfgReq('access', 'hack')).ok, false);
+assert.equal((await setCfgReq('openUntil', 'завтра')).ok, false);
+assert.equal((await worker.fetch(new Request('https://x/panel/api/set', { method: 'POST', body: '{}' }), env, ctx)).status, 401);
+// доступ «только подписчикам» включается сразу, без даты
+assert.equal((await setCfgReq('access', 'subs')).ok, true);
+memberStatus = 'left';
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 503 }, from: { id: 503 }, message_id: 1, text: '/start' } }, TG);
+assert.match(sent.at(-1).text, /Далее бот доступен бесплатно только подписчикам/);
+assert.equal((await (await panelGet(`/panel/api?from=${today9}&to=${today9}`, 'secret-key')).json()).locked, 1); // «не пустили» посчитано
+assert.equal((await setCfgReq('access', 'open')).ok, true); // «открыт всем»
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 503 }, from: { id: 503 }, message_id: 2, text: '/start' } }, TG);
+assert.match(sent.find(m => m.method === 'sendMessage').text, /Здравствуйте/);
+assert.equal((await setCfgReq('access', 'auto')).ok, true);
+memberStatus = 'member';
+// разделы концепции и посты выключаются
+assert.equal((await setCfgReq('concept', false)).ok, true);
+assert.equal((await setCfgReq('posts.news', false)).ok, true);
+const runNews = await worker.fetch(new Request('https://x/run?job=news', { method: 'POST', headers: { 'x-secret': 's' } }), env, ctx);
+assert.equal((await runNews.json()).skipped, 'выключено в пульте');
+assert.equal((await setCfgReq('posts.news', true)).ok, true);
+assert.equal((await setCfgReq('concept', true)).ok, true);
 console.log('OK');

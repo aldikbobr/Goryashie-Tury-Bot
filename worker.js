@@ -5,6 +5,8 @@
 // Секреты (wrangler secret put): BOT_TOKEN, UPDATE_SECRET, TG_SECRET, ADMIN_CODE (код для «/admin <код>»).
 // Переменные (wrangler.jsonc): CHANNEL_ID, CONTACT_URL, POSTS_PER_UPDATE.
 
+import { route as panelRoute, track, getCfg, snapshotSubs } from './stats.js';
+
 const tg = (env, method, body) =>
   fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
     method: 'POST',
@@ -417,9 +419,11 @@ async function startWizard(env, chat_id, data, now, extraIds = []) {
 
 // Доступ к боту: до 29 ноября 2026 включительно открыт всем, с 30 ноября (00:00 по Астане) — только подписчикам канала.
 // Проверка через getChatMember (бот — администратор канала). Если Telegram не ответил, пускаем: лучше открыть, чем закрыть всем.
-const OPEN_UNTIL = '2026-11-30T00:00:00+05:00';
+// режим и дату меняет пульт (cfg.access: auto | open | subs; cfg.openUntil — первый день только для подписчиков)
 async function isAllowed(env, user_id, now) {
-  if (now.getTime() < Date.parse(env.OPEN_UNTIL || OPEN_UNTIL) || !env.CHANNEL_ID) return true;
+  const cfg = await getCfg(env);
+  if (cfg.access === 'open' || !env.CHANNEL_ID) return true;
+  if (cfg.access === 'auto' && now.getTime() < Date.parse(env.OPEN_UNTIL || cfg.openUntil + 'T00:00:00+05:00')) return true;
   const r = await tg(env, 'getChatMember', { chat_id: env.CHANNEL_ID, user_id });
   if (!r.ok) { await alertAdmin(env, `Не удалось проверить подписку на канал (${String(r.description || '').slice(0, 100)}). Бот пока открыт всем.`); return true; }
   return ['creator', 'administrator', 'member'].includes(r.result.status) || (r.result.status === 'restricted' && r.result.is_member);
@@ -440,7 +444,7 @@ async function onTelegram(req, env, ctx) {
     const q = u.callback_query, chat_id = q.message.chat.id, message_id = q.message.message_id;
     if (!(await isAllowed(env, q.from?.id ?? chat_id, now))) {
       await tg(env, 'answerCallbackQuery', { callback_query_id: q.id, text: q.data === 'chk' ? 'Подписки пока нет' : 'Бот доступен подписчикам канала', show_alert: q.data === 'chk' });
-      if (q.data !== 'chk') await tg(env, 'sendMessage', { chat_id, ...lockedMessage(env) });
+      if (q.data !== 'chk') { await track(env, 'locked', q.from?.id ?? chat_id); await tg(env, 'sendMessage', { chat_id, ...lockedMessage(env) }); }
       return new Response('ok');
     }
     await tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
@@ -474,9 +478,11 @@ async function onTelegram(req, env, ctx) {
     return new Response('ok');
   }
   if (!(await isAllowed(env, u.message.from?.id ?? chat_id, now))) {
+    await track(env, 'locked', u.message.from?.id ?? chat_id);
     await tg(env, 'sendMessage', { chat_id, ...lockedMessage(env) });
     return new Response('ok');
   }
+  await track(env, u.message.text === MENU_BUTTON ? 'press' : 'start', u.message.from?.id ?? chat_id);
   // кнопка внизу экрана обновляется только когда бот шлёт клавиатуру заново: один раз на чат, даже если человек не нажимал «Старт»
   const kbKey = 'kb2:' + chat_id;
   const needKb = u.message.text !== MENU_BUTTON || !(await env.TOURS.get(kbKey));
@@ -498,6 +504,7 @@ async function onTelegram(req, env, ctx) {
 // итог подбора: 3 подборки по рейтингу (поиск Tourvisor; при сбое — ссылки) + горящие туры + заявка менеджеру
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
+  await track(env, 'search', chat_id, [w.c === '*' ? 'Любая страна' : COUNTRIES[+w.c], DEPARTURES[+w.d][0], +w.k ? 'с детьми' : 'взрослые'].join('|'));
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
   await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
   if (w.c !== '*') {
@@ -505,7 +512,8 @@ async function results(env, w, now, chat_id, data, sum) {
     let groups = null;
     try {
       const { hotels, concept } = await ratingSelections(env, w, now);
-      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(conceptMessages(w, now, hotels, concept)); // рейтинг → звёздность → концепция, затем горящие
+      const showConcept = (await getCfg(env)).concept !== false; // выключается в пульте
+      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(showConcept ? conceptMessages(w, now, hotels, concept) : []); // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }
@@ -754,6 +762,8 @@ async function postEvening(env, now) {
 }
 
 async function runChannel(env, job, now = new Date()) {
+  if (job === 'stats') return { ok: true, subs: await snapshotSubs(env, tg) }; // число подписчиков канала раз в день
+  if ((await getCfg(env)).posts[job === 'digest' ? 'tours' : job] === false) return { ok: true, skipped: 'выключено в пульте' };
   if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
   try {
     if (job === 'news') {
@@ -788,6 +798,8 @@ const CORS = { 'access-control-allow-origin': 'https://pro.tourvisor.ru', 'acces
 export default {
   async fetch(req, env, ctx) {
     const { pathname } = new URL(req.url);
+    const pr = await panelRoute(req, env, tg); // пульт /panel и отслеживаемые ссылки /go/…
+    if (pr) return pr;
     if (req.method === 'OPTIONS' && pathname === '/update') return new Response(null, { headers: CORS });
     if (req.method === 'POST' && pathname === '/update') {
       const r = await onUpdate(req, env);
@@ -819,7 +831,7 @@ export default {
   // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
     // горящие туры обновляются с открытой страницы Tourvisor перед постами и днём
-    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'] }[event.cron] || ['scrape', 'tours'];
+    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather', 'stats'], '0 14 * * *': ['scrape', 'evening', 'hot'] }[event.cron] || ['scrape', 'tours'];
     ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };
