@@ -392,9 +392,9 @@ async function startWizard(env, chat_id, data, now) {
   if (r.ok) await remember(env, chat_id, [r.result.message_id]);
 }
 
-// Доступ к боту: до 20 ноября 2026 включительно открыт всем, с 21 ноября (00:00 по Астане) — только подписчикам канала.
+// Доступ к боту: до 29 ноября 2026 включительно открыт всем, с 30 ноября (00:00 по Астане) — только подписчикам канала.
 // Проверка через getChatMember (бот — администратор канала). Если Telegram не ответил, пускаем: лучше открыть, чем закрыть всем.
-const OPEN_UNTIL = '2026-11-21T00:00:00+05:00';
+const OPEN_UNTIL = '2026-11-30T00:00:00+05:00';
 async function isAllowed(env, user_id, now) {
   if (now.getTime() < Date.parse(env.OPEN_UNTIL || OPEN_UNTIL) || !env.CHANNEL_ID) return true;
   const r = await tg(env, 'getChatMember', { chat_id: env.CHANNEL_ID, user_id });
