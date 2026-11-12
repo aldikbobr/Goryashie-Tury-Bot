@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, extraGroups, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -107,7 +107,7 @@ assert.equal(kv.get('admin'), '99');
 // /start: постоянная кнопка внизу + первый шаг подбора
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 7 }, message_id: 1, text: '/start' } }, TG);
-assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔎 Подобрать тур за 1 минуту' }]]);
+assert.deepEqual(sent[0].reply_markup.keyboard, [[{ text: '🔎 Подобрать тур за 1 минуту', style: 'primary' }]]);
 assert.ok(sent[0].reply_markup.input_field_placeholder.length <= 64); // лимит Telegram
 assert.match(sent[1].text, /Из какого аэропорта/); // первым шагом — аэропорт вылета (РК)
 assert.deepEqual(sent[1].reply_markup.inline_keyboard.flat().map(b => b.text), ['Астана', 'Петропавловск', 'Алматы', 'Шымкент', 'Караганда', 'Актау', 'Актобе', 'Атырау', 'Костанай', 'Кызылорда', 'Семей', 'Туркестан', 'Уральск', 'Усть-Каменогорск']);
@@ -171,10 +171,14 @@ assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
 const resultIds = Array.from({ length: 8 }, (_, i) => msgId - 7 + i); // 3 подборки по рейтингу, 3 по звёздности, фото тура, кнопка заявки
 assert.deepEqual(sent.slice(7, 10).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
-const eg = (k, hs) => extraGroups({ k }, hs).map(g => g.head);
-const hx = [{ stars: 5, rating: 4.6, price: 1, adult: true }, { stars: 4, rating: 4.2, price: 2, kids: true }];
-assert.deepEqual(eg('0', hx), ['🌟 <b>ПЯТЬ ЗВЁЗД</b>', '🌟 <b>ЧЕТЫРЕ ЗВЕЗДЫ</b>', '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>']);
-assert.deepEqual(eg('2', hx), ['🌟 <b>ПЯТЬ ЗВЁЗД</b>', '🌟 <b>ЧЕТЫРЕ ЗВЕЗДЫ</b>', '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>']);
+const hx = [{ name: 'A', stars: 5, rating: 4.6, price: 1, adult: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }, { name: 'B', stars: 4, rating: 4.2, price: 2, kids: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }];
+const cm = k => conceptMessages({ k, a: '2', ages: [], c: '0', n: '1', p: '0', f: '*', r: '', d: '0' }, new Date('2026-11-12'), hx);
+const adultMsg = cm('0'), kidsMsg = cm('2');
+assert.equal(adultMsg.length, 1); // всё в одном разделе одним сообщением
+assert.ok(!/ЧЕТЫРЕ|>B</.test(adultMsg[0].text)); // в разделе только отели этой концепции
+assert.match(adultMsg[0].text, /^━+\n🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16\+ \/ 18\+<\/b>\n━+\n🟢 <b>РЕЙТИНГ 4,5–5<\/b>[\s\S]*🌟 <b>ПЯТЬ ЗВЁЗД<\/b>/);
+assert.match(kidsMsg[0].text, /ДЕТСКАЯ КОНЦЕПЦИЯ[\s\S]*РЕЙТИНГ 4–4,5[\s\S]*ЧЕТЫРЕ ЗВЕЗДЫ/);
+assert.deepEqual(conceptMessages({ k: '0' }, new Date(), [{ stars: 3, rating: 4, price: 1 }]), []); // нет отелей концепции — раздела нет
 
 // «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
 sent.length = 0;

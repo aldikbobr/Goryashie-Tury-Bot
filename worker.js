@@ -255,14 +255,25 @@ function hotelCard(h, i, place, link) {
     `      ${esc(place)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)}\n      💰 <b>${money(h.price)}</b>`;
 }
 
-// дополнительные подборки по звёздности и концепции (взрослая 16+/18+ — если едут только взрослые, детская — если с детьми)
+// подборки по звёздности (5/4/3) и раздел концепции: взрослая 16+/18+ — если едут только взрослые, детская — если с детьми
 const cheapest3 = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
-export function extraGroups(w, hotels) {
-  const stars = STAR_GROUPS.map(([title, s]) => ({ head: `🌟 <b>${title}</b>`, rating: 0, hotels: cheapest3(hotels.filter(h => h.stars === s && h.rating >= 3.7)) }));
-  const concept = +w.k
-    ? { head: '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>', rating: 0, hotels: cheapest3(hotels.filter(h => h.kids && h.rating >= 3.7)) }
-    : { head: '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>', rating: 0, hotels: cheapest3(hotels.filter(h => h.adult && h.rating >= 3.7)) };
-  return [...stars, concept].filter(g => g.hotels.length); // пустые разделы не показываем
+const starGroups = hotels => STAR_GROUPS.map(([title, s]) => ({ head: `🌟 <b>${title}</b>`, rating: 0, hotels: cheapest3(hotels.filter(h => h.stars === s && h.rating >= 3.7)) }));
+
+// раздел концепции: одна шапка с чёрточками, внутри та же разбивка — рейтинг и звёздность, только по отелям этой концепции
+export function conceptMessages(w, now, hotels) {
+  const kids = +w.k > 0;
+  const own = hotels.filter(h => (kids ? h.kids : h.adult));
+  const subs = [...groupHotels(own).map(g => ({ ...g, head: ratingTitle(g) })), ...starGroups(own)].filter(g => g.hotels.length);
+  const head = groupHeader(kids ? '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>' : '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>') + '\n';
+  const out = [];
+  for (const g of subs) {
+    const text = g.head + '\n' + g.hotels.map((h, i) => hotelCard(h, i, h.region)).join('\n\n');
+    const kb = g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]);
+    const last = out.at(-1);
+    if (last && last.text.length + text.length < 3500) { last.text += '\n\n' + text; last.kb.push(...kb); } // лимит Telegram 4096 знаков
+    else out.push({ text: (out.length ? '' : head) + text, kb });
+  }
+  return out;
 }
 
 function groupMessage(w, now, g) {
@@ -416,7 +427,7 @@ async function onTelegram(req, env, ctx) {
       chat_id,
       text: 'Здравствуйте! Здесь горящие туры и подбор туров из городов Казахстана. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
       // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘
-      reply_markup: { keyboard: [[{ text: MENU_BUTTON }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
+      reply_markup: { keyboard: [[{ text: MENU_BUTTON, style: 'primary' }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
     });
   }
   await startWizard(env, chat_id, data, now);
@@ -432,14 +443,13 @@ async function results(env, w, now, chat_id, data, sum) {
     let groups = null;
     try {
       const hotels = await ratingSelections(env, w, now);
-      groups = [...groupHotels(hotels), ...extraGroups(w, hotels)]; // рейтинг → звёздность → концепция, затем горящие
+      groups = [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g)).concat(conceptMessages(w, now, hotels)); // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }
     if (wait.ok) { await tg(env, 'deleteMessage', { chat_id, message_id: wait.result.message_id }); ids.pop(); }
     if (groups) {
-      for (const g of groups) {
-        const m = groupMessage(w, now, g);
+      for (const m of groups) {
         await send({ text: m.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: m.kb } });
       }
     } else {
