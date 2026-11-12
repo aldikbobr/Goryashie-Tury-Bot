@@ -381,7 +381,7 @@ memberStatus = 'left';
 sent.length = 0;
 await post('/tg', { message: { chat: { id: 56 }, from: { id: 56 }, message_id: 1, text: '/start' } }, TG);
 assert.deepEqual(sent.map(m => m.method), ['getChatMember', 'sendMessage']);
-assert.match(sent[1].text, /доступен подписчикам/);
+assert.match(sent[1].text, /Далее бот доступен бесплатно только подписчикам Telegram-канала[\s\S]*https:\/\/t\.me\/ch/);
 assert.equal(sent[1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/ch');
 sent.length = 0;
 await post('/tg', { callback_query: { id: 'c', data: 'chk', from: { id: 56 }, message: { chat: { id: 56 }, message_id: 9 } } }, TG);

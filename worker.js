@@ -403,7 +403,7 @@ async function isAllowed(env, user_id, now) {
 }
 const channelUrl = env => 'https://t.me/' + String(env.CHANNEL_ID).replace('@', '');
 const lockedMessage = env => ({
-  text: '🔒 Бот горящих туров доступен подписчикам нашего канала. Подпишитесь и нажмите «Проверить подписку».',
+  text: `🔒 Далее бот доступен бесплатно только подписчикам Telegram-канала «Горящие туры из Астаны».\n\nПерейдите и подпишитесь: ${channelUrl(env)}\n\nПосле подписки нажмите «Проверить подписку».`,
   reply_markup: { inline_keyboard: [[{ text: '📢 Подписаться на канал', url: channelUrl(env) }], [{ text: '✅ Проверить подписку', callback_data: 'chk' }]] },
 });
 
