@@ -358,4 +358,11 @@ assert.equal(rs.ok, true); assert.equal(sent.length, 0); // в канал нич
 
 assert.equal((await worker.fetch(new Request('https://x/update', { method: 'OPTIONS' }), env, ctx)).headers.get('access-control-allow-origin'), 'https://pro.tourvisor.ru');
 assert.equal((await worker.fetch(new Request('https://x/.git/HEAD'), env, ctx)).status, 404);
+// старый клиент без «Старт»: при первом нажатии кнопки бот один раз присылает синюю клавиатуру, дальше — нет
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 99 }, message_id: 1, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
+assert.equal(sent.filter(m => m.reply_markup?.keyboard?.[0]?.[0]?.style === 'primary').length, 1);
+sent.length = 0;
+await post('/tg', { message: { chat: { id: 99 }, message_id: 2, text: '🔎 Подобрать тур за 1 минуту' } }, TG);
+assert.equal(sent.filter(m => m.reply_markup?.keyboard).length, 0);
 console.log('OK');

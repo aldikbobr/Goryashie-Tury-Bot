@@ -418,18 +418,19 @@ async function onTelegram(req, env, ctx) {
     await tg(env, 'sendMessage', { chat_id, text: 'Готово: сообщения о сбоях поиска Tourvisor будут приходить сюда.' });
     return new Response('ok');
   }
-  if (u.message.text === MENU_BUTTON) {
-    // нажатие кнопки тоже убираем вместе со старой подборкой
-    await remember(env, chat_id, [u.message.message_id]);
-  } else {
-    // кнопка «Подобрать тур» всегда внизу экрана, под полем ввода
-    await tg(env, 'sendMessage', {
-      chat_id,
-      text: 'Здравствуйте! Здесь горящие туры и подбор туров из городов Казахстана. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
-      // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘
-      reply_markup: { keyboard: [[{ text: MENU_BUTTON, style: 'primary' }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
-    });
-  }
+  // кнопка внизу экрана обновляется только когда бот шлёт клавиатуру заново: один раз на чат, даже если человек не нажимал «Старт»
+  const kbKey = 'kb2:' + chat_id;
+  const needKb = u.message.text !== MENU_BUTTON || !(await env.TOURS.get(kbKey));
+  const kbMsg = needKb && await tg(env, 'sendMessage', {
+    chat_id,
+    text: u.message.text === MENU_BUTTON
+      ? '🔎 Кнопка обновлена.'
+      : 'Здравствуйте! Здесь горящие туры и подбор туров из городов Казахстана. Кнопка «🔎 Подобрать тур за 1 минуту» всегда внизу экрана.',
+    // подсказка в поле ввода видна, даже если клиент свернул кнопку значком ⌘; style primary = синяя кнопка
+    reply_markup: { keyboard: [[{ text: MENU_BUTTON, style: 'primary' }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Подобрать тур за 1 минуту — значок справа ⌘' },
+  });
+  if (kbMsg?.ok) await env.TOURS.put(kbKey, '1');
+  if (u.message.text === MENU_BUTTON) await remember(env, chat_id, [u.message.message_id, ...(kbMsg?.ok ? [kbMsg.result.message_id] : [])]); // нажатие тоже убираем вместе со старой подборкой
   await startWizard(env, chat_id, data, now);
   return new Response('ok');
 }
