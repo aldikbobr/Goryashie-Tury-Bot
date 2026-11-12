@@ -6,6 +6,7 @@
 // Переменные (wrangler.jsonc): CHANNEL_ID, CONTACT_URL, POSTS_PER_UPDATE.
 
 import { route as panelRoute, track, getCfg, snapshotSubs } from './stats.js';
+import { kompasUrl } from './kompas.js';
 
 const tg = (env, method, body) =>
   fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
@@ -180,6 +181,9 @@ function range(w, now) {
   return { from: ddmmyyyy(from), to: ddmmyyyy(to), nMin: nMin || 3, nMax: nMax === 99 ? 21 : nMax };
 }
 
+// ссылка на отель: страница отеля на сайте туроператора KOMPAS (kompastour.com), если он там есть, иначе поиск Tourvisor по этому отелю
+const hotelLink = (w, now, h) => kompasUrl(COUNTRIES[+w.c], h.name) || searchLink(w, now, 0, h);
+
 // hotel — ссылка на конкретный отель, дату и ночи (как в ссылках самого Tourvisor)
 export function searchLink(w, now, rating, hotel) {
   const r = range(w, now);
@@ -272,14 +276,9 @@ const starGroups = hotels => STAR_GROUPS.map(([title, s]) => ({ head: `🌟 <b>$
 export function paramMessages(w, now, hotels, concept, lead, withConcept = true) {
   const byPrice = (a, b) => a.price - b.price;
   const ok = hotels.filter(h => fits(w, h));
-  let main;
-  if (w.st === 'r') { // от 3 до 5 звёзд: по очереди самый дешёвый 5★, 4★, 3★
-    const lists = [5, 4, 3].map(s => ok.filter(h => h.stars === s).sort(byPrice));
-    main = [];
-    for (let i = 0; main.length < 5 && lists.some(l => l[i]); i++) for (const l of lists) if (l[i] && main.length < 5) main.push(l[i]);
-  } else main = [...ok].sort(byPrice).slice(0, 5);
+  const main = [...ok].sort(byPrice).slice(0, 5);
   const card = (list, h, i) => hotelCard(h, i, h.region);
-  const btns = list => list.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]);
+  const btns = list => list.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: hotelLink(w, now, h) }]);
   const out = [{
     text: groupHeader('🎯 <b>ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ</b>') + '\n' + (main.length ? main.map((h, i) => card(main, h, i)).join('\n\n')
       : 'Под ваши параметры отелей не нашлось. Попробуйте изменить звёздность, рейтинг, пляж или бюджет — или напишите менеджеру.'),
@@ -300,7 +299,7 @@ export function conceptMessages(w, now, hotels, concept = []) {
   const out = [];
   for (const g of subs) {
     const text = g.head + '\n' + THIN + '\n' + g.hotels.map((h, i) => hotelCard(h, i, h.region)).join('\n\n');
-    const kb = g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]);
+    const kb = g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: hotelLink(w, now, h) }]);
     const last = out.at(-1);
     if (last && last.text.length + text.length < 3500) { last.text += '\n\n' + text; last.kb.push(...kb); } // лимит Telegram 4096 знаков
     else out.push({ text: (out.length ? '' : head) + text, kb });
@@ -313,7 +312,7 @@ function groupMessage(w, now, g, lead) {
   return {
     text: groupHeader(g.head || ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
     kb: [
-      ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]),
+      ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: hotelLink(w, now, h) }]),
       ...(lead ? [[{ text: '📩 Написать менеджеру', url: lead }]] : []),
     ],
   };
@@ -327,18 +326,14 @@ async function ratingSelections(env, w, now) {
   const cached = await env.TOURS.get(key);
   if (cached) return JSON.parse(cached);
   const kidsSv = +w.k ? '3' : '48'; // концепция: «Мини-клуб» с детьми, «Только для взрослых» без детей
-  let res;
-  if (!isFiltered(w)) { // всё «любое» — как раньше: общий поиск и поиск по концепции
-    const [hotels, concept] = await Promise.all([tvSearch(w, now), tvSearch(w, now, undefined, kidsSv).catch(() => [])]);
-    res = { hotels, concept };
-  } else {
-    // выбраны звёздность, рейтинг или пляж: поиск уже с этими фильтрами; для «от 3 до 5 звёзд» — по поиску на каждую категорию
-    const bs = beachServices(w), rate = { '0': 5, '1': 4, '2': 3 }[w.rt] || 3; // код рейтинга Tourvisor: 5 = от 4,5; 4 = от 4,0; 3 = от 3,5
-    const stars = w.st === 'r' ? [5, 4, 3] : w.st === '*' ? [0] : [+w.st];
-    const found = await Promise.all(stars.map(s => tvSearch(w, now, undefined, bs, { stars: s, rating: rate })));
-    const concept = await tvSearch(w, now, undefined, [bs, kidsSv].filter(Boolean).join(','), { stars: stars.length === 1 ? stars[0] : 0, rating: rate }).catch(() => []);
-    res = { hotels: [...new Map(found.flat().map(h => [h.id, h])).values()], concept };
-  }
+  // фильтры клиента идут прямо в поиск Tourvisor: пляж (услуги), звёздность, рейтинг; второй поиск — отели нужной концепции
+  const bs = beachServices(w), star = w.st === '*' ? 0 : +w.st;
+  const rate = { '0': 5, '1': 4, '2': 3 }[w.rt] || 3; // код рейтинга Tourvisor: 5 = от 4,5; 4 = от 4,0; 3 = от 3,5 (и «любой» — от 3,5, дальше делим сами)
+  const [hotels, concept] = await Promise.all([
+    tvSearch(w, now, undefined, bs, { stars: star, rating: rate }),
+    tvSearch(w, now, undefined, [bs, kidsSv].filter(Boolean).join(','), { stars: star, rating: rate }).catch(() => []),
+  ]);
+  const res = { hotels, concept };
   await env.TOURS.put(key, JSON.stringify(res), { expirationTtl: 1800 });
   return res;
 }
@@ -356,21 +351,27 @@ const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f, w.r, w
 
 // ---------- Новые шаги: бюджет, звёздность, рейтинг, пляж ----------
 // Бюджет — цена тура в тенге за всех туристов (как в поиске Tourvisor); '*' — любой
-const BUDGETS = [['до 300 тыс. ₸', 0, 300000], ['300–500 тыс. ₸', 300000, 500000], ['500–800 тыс. ₸', 500000, 800000], ['800 тыс. – 1,2 млн ₸', 800000, 1200000], ['1,2–2 млн ₸', 1200000, 2000000], ['от 2 млн ₸', 2000000, 0]];
-const STAR_OPTS = [['⭐⭐⭐⭐⭐ 5 звёзд', '5'], ['⭐⭐⭐⭐ 4 звезды', '4'], ['⭐⭐⭐ 3 звезды', '3'], ['От 3 до 5 звёзд', 'r']]; // и «Любая звёздность» = '*'
+const BUDGETS = [['500–800 тыс. ₸', 500000, 800000], ['800 тыс. – 1,2 млн ₸', 800000, 1200000], ['1,2–2 млн ₸', 1200000, 2000000], ['2–2,5 млн ₸', 2000000, 2500000], ['2,5–3 млн ₸', 2500000, 3000000], ['от 3 млн ₸', 3000000, 0]];
+const STAR_OPTS = [['⭐⭐⭐⭐⭐ 5 звёзд', '5'], ['⭐⭐⭐⭐ 4 звезды', '4'], ['⭐⭐⭐ 3 звезды', '3'], ['Любая звёздность', '*']];
 const RATING_OPTS = [['🟢 4,5–5', '0'], ['🟡 4–4,5', '1'], ['🟠 3,7–4', '2'], ['От 3,7 до 5', 'r']]; // сетка подборок; и «Любой рейтинг» = '*'
-const BEACH_BITS = [[1, 'Первая береговая линия', '15'], [2, 'Песчаный пляж', '17']]; // номера услуг Tourvisor; пляж выбирается один, оба или никакой
+// пляж: три отметки (галочки): «Любой пляж» (4), «Первая береговая линия» (1, услуга Tourvisor 15), «Песчаный пляж» (2, услуга 17); «любой» и «первая линия» исключают друг друга
+const BEACH_BITS = [[4, 'Любой пляж', ''], [1, 'Первая береговая линия', '15'], [2, 'Песчаный пляж', '17']];
 const beachMask = w => (/^t?\d$/.test(w.by || '') ? +w.by.replace('t', '') : 0);
 const beachDone = w => /^\d$/.test(w.by || '');
-const beachServices = w => BEACH_BITS.filter(([bit]) => beachMask(w) & bit).map(x => x[2]).join(',');
-const beachText = w => (beachMask(w) ? BEACH_BITS.filter(([bit]) => beachMask(w) & bit).map(x => x[1].toLowerCase()).join(' и ') : 'любой');
-const starText = st => (st === '*' ? 'любая' : st === 'r' ? 'от 3 до 5' : st + '★');
+const beachServices = w => BEACH_BITS.filter(([bit, , sv]) => sv && beachMask(w) & bit).map(x => x[2]).join(',');
+const beachText = w => {
+  const m = beachMask(w), parts = [];
+  if (m & 1) parts.push('первая береговая линия'); else if (m & 4 && m & 2) parts.push('любая линия');
+  if (m & 2) parts.push('песчаный пляж');
+  return parts.join(' и ') || 'любой';
+};
+const starText = st => (st === '*' ? 'любая' : st + '★');
 const ratingText = rt => (rt === '*' ? 'любой' : rt === 'r' ? 'от 3,7 до 5' : GROUPS[+rt][0]);
-// выбраны ли звёздность, рейтинг или пляж — тогда подборка «по параметрам» (до 5 отелей), иначе как раньше: группы по рейтингу и звёздности
-const isFiltered = w => w.st !== '*' || w.rt !== '*' || beachMask(w) > 0;
+// выбрана ли звёздность или рейтинг — тогда подборка «по параметрам» (до 5 отелей); любая звёздность и любой рейтинг — как раньше: группы по рейтингу и звёздности (пляж работает в обоих случаях)
+const isFiltered = w => w.st !== '*' || w.rt !== '*';
 // подходит ли отель под выбор клиента
 function fits(w, h) {
-  if (w.st === 'r' ? !(h.stars >= 3 && h.stars <= 5) : w.st !== '*' && h.stars !== +w.st) return false;
+  if (w.st !== '*' && h.stars !== +w.st) return false;
   const [, from, to] = w.rt === 'r' ? [0, 3.7, 99] : w.rt === '*' ? [0, 3.7, 99] : [0, GROUPS[+w.rt][1], GROUPS[+w.rt][2]];
   return h.rating >= from && h.rating < to;
 }
@@ -416,19 +417,21 @@ function step(w, data, now) {
   }
   if (!w.st) return {
     text: head + 'Звёздность отеля:',
-    kb: [...rows(STAR_OPTS.map(([text, v]) => pick(w, 'st', { text, v })), 2), [pick(w, 'st', { text: 'Любая звёздность', v: '*' })], back(w, +w.k ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '' })],
+    kb: [...rows(STAR_OPTS.map(([text, v]) => pick(w, 'st', { text, v })), 2), back(w, +w.k ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '' })],
   };
   if (!w.rt) return {
     text: head + 'Рейтинг отеля:',
     kb: [...rows(RATING_OPTS.map(([text, v]) => pick(w, 'rt', { text, v })), 2), [pick(w, 'rt', { text: 'Любой рейтинг', v: '*' })], back(w, { ...w, st: '' })],
   };
   if (!beachDone(w)) {
-    // пляж: можно отметить один пункт, оба или ни одного («Любой пляж»); отметка хранится в кнопках как t<номер>
+    // пляж: три галочки («Любой пляж», «Первая береговая линия», «Песчаный пляж»); «любой» и «первая линия» не ставятся вместе, «любой» + «песчаный» можно
+    // отметки хранятся в кнопках как t<число>, «Готово» подтверждает выбор
     const m = beachMask(w);
+    const toggle = bit => { let n = m ^ bit; if (n & bit) n &= bit === 4 ? ~1 : bit === 1 ? ~4 : n; return n; };
     return {
-      text: head + 'Пляж (можно выбрать оба пункта):',
-      kb: [...BEACH_BITS.map(([bit, name]) => [{ text: (m & bit ? '✅ ' : '⬜ ') + name, callback_data: encode({ ...w, by: 't' + (m ^ bit) }) }]),
-        [{ text: 'Готово ▶', callback_data: encode({ ...w, by: String(m) }) }, pick(w, 'by', { text: 'Любой пляж', v: '0' })], back(w, { ...w, rt: '', by: '' })],
+      text: head + 'Пляж (отметьте нужное и нажмите «Готово»):',
+      kb: [...BEACH_BITS.map(([bit, name]) => [{ text: (m & bit ? '✅ ' : '⬜ ') + name, callback_data: encode({ ...w, by: 't' + toggle(bit) }) }]),
+        [{ text: 'Готово ▶', callback_data: encode({ ...w, by: String(m) }) }], back(w, { ...w, rt: '', by: '' })],
     };
   }
   if (!w.f) return {
@@ -475,7 +478,7 @@ export function matches(w, data, now) {
 export function hotFits(w, t) {
   const b = budgetRange(w);
   if (b && (t.price < b[1] || (b[2] && t.price >= b[2]))) return false;
-  if (w.st && w.st !== '*' && t.stars && (w.st === 'r' ? t.stars < 3 : t.stars !== +w.st)) return false;
+  if (w.st && w.st !== '*' && t.stars && t.stars !== +w.st) return false;
   if (w.rt && w.rt !== '*' && t.rating) {
     const [from, to] = w.rt === 'r' ? [3.7, 99] : [GROUPS[+w.rt][1], GROUPS[+w.rt][2]];
     if (t.rating < from || t.rating >= to) return false;
@@ -659,7 +662,7 @@ export async function channelDigest(env, now, search = tvSearch) {
   }));
   const hotels = found.flatMap(x => (x.status === 'fulfilled' ? x.value : []));
   if (!hotels.length) throw new Error('ни одна страна не ответила: ' + found.map(x => x.reason?.message).filter(Boolean)[0]);
-  const card = (h, i) => hotelCard(h, i, `${h.country}, ${h.region}`, searchLink(h.w, now, 0, h));
+  const card = (h, i) => hotelCard(h, i, `${h.country}, ${h.region}`, hotelLink(h.w, now, h));
   const block = (title, list) => groupHeader(title) + '\n' + (list.length ? list.map(card).join('\n') : 'нет вариантов');
   const cheapest = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
   const date = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: 'numeric', month: 'long' });

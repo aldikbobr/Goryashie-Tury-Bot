@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { astanaDay } from './stats.js';
+import { kompasUrl } from './kompas.js';
 import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, paramMessages, hotFits, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
@@ -133,18 +134,18 @@ const texts = () => sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.t
 const wizard = async (city = 'Астана') => {
   const hot = city === 'Астана' ? '🔥 ' : '';
   await press(city); assert.match(sent.at(-1).text, /Вылет: [^\n]*\n\n👉 Какой бюджет/);
-  assert.deepEqual(texts(), ['до 300 тыс. ₸', '300–500 тыс. ₸', '500–800 тыс. ₸', '800 тыс. – 1,2 млн ₸', '1,2–2 млн ₸', 'от 2 млн ₸', 'Любой бюджет', NB]); // линейка бюджета
+  assert.deepEqual(texts(), ['500–800 тыс. ₸', '800 тыс. – 1,2 млн ₸', '1,2–2 млн ₸', '2–2,5 млн ₸', '2,5–3 млн ₸', 'от 3 млн ₸', 'Любой бюджет', NB]); // линейка бюджета
   await press('Любой бюджет'); assert.match(sent.at(-1).text, /Бюджет: любой\n\n👉 Сколько взрослых/);
   await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
   await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
   assert.deepEqual(texts(), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2)), NB]);
   await press('5'); assert.match(sent.at(-1).text, /Звёздность отеля/);
-  assert.deepEqual(texts(), ['⭐⭐⭐⭐⭐ 5 звёзд', '⭐⭐⭐⭐ 4 звезды', '⭐⭐⭐ 3 звезды', 'От 3 до 5 звёзд', 'Любая звёздность', NB]);
+  assert.deepEqual(texts(), ['⭐⭐⭐⭐⭐ 5 звёзд', '⭐⭐⭐⭐ 4 звезды', '⭐⭐⭐ 3 звезды', 'Любая звёздность', NB]);
   await press('Любая звёздность'); assert.match(sent.at(-1).text, /Рейтинг отеля/);
   assert.deepEqual(texts(), ['🟢 4,5–5', '🟡 4–4,5', '🟠 3,7–4', 'От 3,7 до 5', 'Любой рейтинг', NB]);
   await press('Любой рейтинг'); assert.match(sent.at(-1).text, /Пляж/);
-  assert.deepEqual(texts(), ['⬜ Первая береговая линия', '⬜ Песчаный пляж', 'Готово ▶', 'Любой пляж', NB]);
-  await press('Любой пляж'); assert.match(sent.at(-1).text, /Питание/);
+  assert.deepEqual(texts(), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж', 'Готово ▶', NB]);
+  await press('Готово ▶'); assert.match(sent.at(-1).text, /Питание/); // ничего не отмечено — любой пляж
   assert.deepEqual(texts(), ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено', NB]);
   await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
   const countryBtns = texts().filter(t => t !== NB);
@@ -456,23 +457,32 @@ m9 = await go9(m9, NB); assert.match(m9.text, /Сколько детей/); // �
 m9 = await go9(m9, 'Без детей');
 m9 = await go9(m9, '⭐⭐⭐⭐ 4 звезды'); assert.match(m9.text, /Звёздность: 4★\n\n👉 Рейтинг отеля/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Звёздность отеля/);
-m9 = await go9(m9, 'От 3 до 5 звёзд'); assert.match(m9.text, /Звёздность: от 3 до 5/);
+m9 = await go9(m9, 'Любая звёздность'); assert.match(m9.text, /Звёздность: любая/);
+m9 = await go9(m9, NB);
+m9 = await go9(m9, '⭐⭐⭐⭐ 4 звезды');
 m9 = await go9(m9, '🟢 4,5–5'); assert.match(m9.text, /Рейтинг: 4,5–5\n\n👉 Пляж/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Рейтинг отеля/);
 m9 = await go9(m9, '🟢 4,5–5');
-// пляж: можно отметить один пункт, оба или ни одного
-m9 = await go9(m9, '⬜ Песчаный пляж'); assert.deepEqual(m9.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 2), ['⬜ Первая береговая линия', '✅ Песчаный пляж']);
-m9 = await go9(m9, '⬜ Первая береговая линия'); assert.deepEqual(m9.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 2), ['✅ Первая береговая линия', '✅ Песчаный пляж']);
-m9 = await go9(m9, '✅ Песчаный пляж'); assert.deepEqual(m9.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 2), ['✅ Первая береговая линия', '⬜ Песчаный пляж']);
+// пляж: три галочки «Любой пляж», «Первая береговая линия», «Песчаный пляж»; «любой» и «первая линия» вместе не ставятся, «любой» + «песчаный» можно
+const marks = m => m.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 3);
+assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']);
+m9 = await go9(m9, '⬜ Песчаный пляж'); assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '✅ Песчаный пляж']);
+m9 = await go9(m9, '⬜ Первая береговая линия'); assert.deepEqual(marks(m9), ['⬜ Любой пляж', '✅ Первая береговая линия', '✅ Песчаный пляж']);
+m9 = await go9(m9, '⬜ Любой пляж'); assert.deepEqual(marks(m9), ['✅ Любой пляж', '⬜ Первая береговая линия', '✅ Песчаный пляж']); // «любой» снял «первую линию»
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: любая линия и песчаный пляж\n[\s\S]*Питание/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Пляж \(отметьте нужное/); // назад к пляжу, выбор сброшен
+assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']);
+m9 = await go9(m9, '⬜ Первая береговая линия');
+m9 = await go9(m9, '⬜ Любой пляж'); assert.deepEqual(marks(m9), ['✅ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']); // «первую линию» снял «любой»
+m9 = await go9(m9, '⬜ Первая береговая линия');
 m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: первая береговая линия\n[\s\S]*Питание/);
-m9 = await go9(m9, NB); assert.match(m9.text, /Пляж \(можно выбрать оба пункта\)/); // назад к пляжу, выбор сброшен
-assert.equal(m9.reply_markup.inline_keyboard[0][0].text, '⬜ Первая береговая линия');
+m9 = await go9(m9, NB);
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: любой\n[\s\S]*Питание/); // ничего не отмечено — любой пляж
+m9 = await go9(m9, NB);
 m9 = await go9(m9, '⬜ Песчаный пляж');
 m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: песчаный пляж\n[\s\S]*Питание/);
 m9 = await go9(m9, NB);
-m9 = await go9(m9, 'Любой пляж'); assert.match(m9.text, /Пляж: любой\n[\s\S]*Питание/);
-m9 = await go9(m9, NB); assert.match(m9.text, /Пляж \(можно/);
-m9 = await go9(m9, 'Любой пляж');
+m9 = await go9(m9, 'Готово ▶');
 m9 = await go9(m9, 'Любое'); assert.match(m9.text, /Выберите страну/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Питание/);
 m9 = await go9(m9, 'Любое');
@@ -499,12 +509,8 @@ assert.equal(paramMessages(wp, new Date('2026-11-12'), hs5, [HH(9, 5, 4.6, 12000
 pm = paramMessages({ ...wp, rt: '2' }, new Date('2026-11-12'), hs5, [], lead9);
 assert.match(pm[0].text, /отелей не нашлось/); // ничего не подошло — подсказка и кнопка менеджеру
 assert.equal(pm.length, 1);
-// «от 3 до 5 звёзд» — по очереди 5★, 4★, 3★
-const hsMix = [HH(1, 5, 4.8, 900000), HH(2, 5, 4.6, 800000), HH(3, 4, 4.5, 500000), HH(4, 4, 4.2, 450000), HH(5, 3, 4.0, 300000), HH(6, 3, 3.9, 310000), HH(7, 2, 4.9, 100000)];
-pm = paramMessages({ ...wp, st: 'r', rt: 'r' }, new Date('2026-11-12'), hsMix, [], lead9);
-assert.deepEqual([...pm[0].text.matchAll(/<b>H(\d)<\/b>/g)].map(x => x[1]), ['2', '4', '5', '1', '3']); // 2★ в подборку не попадает
 // горящие туры: бюджет, звёздность, рейтинг
-assert.deepEqual([hotFits({ bd: '0' }, { price: 200000 }), hotFits({ bd: '0' }, { price: 400000 }), hotFits({ bd: '5' }, { price: 2500000 }), hotFits({ st: '5' }, { stars: 4 }), hotFits({ rt: 'r' }, { rating: 3.5 }), hotFits({ bd: '*', st: '*', rt: '*' }, { price: 1 })], [true, false, true, false, false, true]);
+assert.deepEqual([hotFits({ bd: '0' }, { price: 400000 }), hotFits({ bd: '0' }, { price: 600000 }), hotFits({ bd: '5' }, { price: 3500000 }), hotFits({ bd: '3' }, { price: 2600000 }), hotFits({ st: '5' }, { stars: 4 }), hotFits({ rt: 'r' }, { rating: 3.5 }), hotFits({ bd: '*', st: '*', rt: '*' }, { price: 1 })], [false, true, true, false, false, false, true]);
 // в Tourvisor уходят бюджет, звёздность, рейтинг и пляж; для концепции — те же фильтры + услуга «Только для взрослых»
 kv.set('kb2:7', '1');
 for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
@@ -512,10 +518,29 @@ tvCalls.length = 0; sent.length = 0;
 await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:*:0:2:5:0:3', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
 const qs = tvCalls.filter(u => u.includes('modsearch')).map(u => Object.fromEntries(new URL(u).searchParams));
 assert.equal(qs.length, 2); // основной поиск и поиск концепции
-assert.deepEqual([qs[0].pricefrom, qs[0].priceto, qs[0].stars, qs[0].rating, qs[0].services], ['500000', '800000', '5', '5', '15,17']);
+assert.deepEqual([qs[0].pricefrom, qs[0].priceto, qs[0].stars, qs[0].rating, qs[0].services], ['1200000', '2000000', '5', '5', '15,17']);
 assert.equal(qs[1].services, '15,17,48');
 assert.ok(sent.some(m => /ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ/.test(m.text || '')));
 assert.ok(!sent.some(m => /РЕЙТИНГ 4,5–5/.test(m.text || ''))); // это уже не три группы, а одна подборка по параметрам
+
+// ссылки на отели ведут на сайт туроператора KOMPAS, если отель там есть; иначе — прежняя ссылка на поиск Tourvisor
+assert.equal(kompasUrl('Турция', 'ARSI BLUE BEACH HOTEL (EX. KEMALHAN BEACH)'), 'https://kompastour.com/kz/rus/country/turkey/alanya/arsi_blue_beach_hotel/');
+assert.equal(kompasUrl('Китай', 'Sanya New City'), 'https://kompastour.com/kz/rus/country/china/hainan/sanya_new_city/'); // пример Аслана
+assert.equal(kompasUrl('Турция', 'NO SUCH HOTEL XYZ'), null);
+assert.equal(kompasUrl('Россия', 'Любой'), null); // у KOMPAS нет такой страны
+const kw = { ...wp, c: '0', st: '*', rt: '*' }; // страна 0 = Турция
+const km = paramMessages({ ...kw, st: '5', rt: '*' }, new Date('2026-11-12'), [HH(1, 5, 4.0, 900000, { name: 'ARSI BLUE BEACH HOTEL (EX. KEMALHAN BEACH)' }), HH(2, 5, 4.1, 950000, { name: 'NO SUCH HOTEL XYZ' })], [], lead9);
+assert.equal(km[0].kb[0][0].url, 'https://kompastour.com/kz/rus/country/turkey/alanya/arsi_blue_beach_hotel/'); // отель есть у KOMPAS
+assert.match(km[0].kb[1][0].url, /^https:\/\/tourvisor\.ru\/search\.php\?/); // нет у KOMPAS — поиск Tourvisor
+// любая звёздность и любой рейтинг + пляж: подборка как раньше (группы), а пляж идёт фильтром в поиск
+kv.set('kb2:7', '1');
+for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
+tvCalls.length = 0; sent.length = 0;
+await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:*:0:*:*:*:2', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+const qb = tvCalls.filter(u => u.includes('modsearch')).map(u => Object.fromEntries(new URL(u).searchParams));
+assert.deepEqual([qb[0].services, qb[1].services], ['17', '17,48']); // песчаный пляж; для концепции — плюс «Только для взрослых»
+assert.ok(sent.some(m => /РЕЙТИНГ 4,5–5/.test(m.text || ''))); // подборка по группам рейтинга, не «по параметрам»
+assert.ok(!sent.some(m => /ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ/.test(m.text || '')));
 
 // ---- статистика и пульт ----
 const sdb = new DatabaseSync(':memory:');
