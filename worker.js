@@ -123,6 +123,8 @@ const COUNTRIES = ['Турция', 'Египет', 'Таиланд', 'ОАЭ', '
   'Марокко', 'Оман', 'Сейшелы', 'Сербия', 'Сингапур', 'Словения', 'Танзания', 'Тунис', 'Узбекистан', 'Франция',
   'Черногория', 'Чехия', 'Шри-Ланка', 'Южная Корея', 'Япония'];
 const countriesOf = () => COUNTRIES;
+// Страны, которые не показываем в боте (по просьбе владельца 12.11.2026). Список COUNTRIES не трогаем: номера стран хранятся в кнопках старых подборок.
+const HIDDEN_COUNTRIES = new Set(['Чехия', 'Франция', 'Сербия', 'Словения', 'Венгрия', 'Россия', 'Австрия', 'Италия', 'Сингапур']);
 
 // ---------- Ссылки на поиск Tourvisor с параметрами клиента (проверено 08.11.2026) ----------
 const COUNTRY_IDS = { Турция: 4, Египет: 1, Таиланд: 2, ОАЭ: 9, Россия: 47, Китай: 13, Вьетнам: 16, Австрия: 31, Азербайджан: 55,
@@ -242,7 +244,7 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
   const bud = budgetRange(w); // бюджет клиента → фильтр цены Tourvisor (в тенге, 0 = без границы)
   const p = new URLSearchParams({
     datefrom: r.from, dateto: r.to, nightsfrom: r.nMin, nightsto: r.nMax, adults: w.a, child: +w.k || 0,
-    meal: w.f === '*' ? 0 : MEAL_IDS[+w.f], rating: extra.rating || 3, // 3 = от 3,5; дальше делим на группы сами
+    meal: extra.meal ?? (w.f === '*' ? 0 : MEAL_IDS[+w.f]), rating: extra.rating || 3, // 3 = от 3,5; дальше делим на группы сами
     country: COUNTRY_IDS[COUNTRIES[+w.c]], departure: depId(w), currency: 3,
     directflight: 0, regular: 1, pricefrom: bud ? bud[1] : 0, priceto: bud ? bud[2] : 0, formmode: 0, origincountry: 3, pricetype: 0,
   });
@@ -361,11 +363,18 @@ async function ratingSelections(env, w, now) {
   // фильтры клиента идут прямо в поиск Tourvisor: пляж (услуги), звёздность, рейтинг; второй поиск — отели нужной концепции
   const bs = beachServices(w), stars = STAR_SET(w) || [0]; // выбрано несколько звёздностей — по поиску на каждую (Tourvisor принимает только одну)
   const rate = Math.min(...(RATE_SET(w) || [2]).map(g => 5 - g), 5) || 3; // группа 0 → 5, 1 → 4, 2 → 3; при нескольких берём самый широкий // код рейтинга Tourvisor: 5 = от 4,5; 4 = от 4,0; 3 = от 3,5 (и «любой» — от 3,5, дальше делим сами)
-  const [found, concept] = await Promise.all([
+  const one = stars.length === 1 ? stars[0] : 0;
+  const cs = [bs, kidsSv].filter(Boolean).join(',');
+  // Питание «это и лучше»: Tourvisor при выбранном питании не отдаёт «Ультра всё включено» (UAI), хотя оно лучше любого другого, поэтому ищем UAI отдельно
+  const withUai = w.f !== '*' && +w.f < MEAL_IDS.length - 1;
+  const [found, concept, uai, conceptUai] = await Promise.all([
     Promise.all(stars.map(st => tvSearch(w, now, undefined, bs, { stars: st, rating: rate }))),
-    tvSearch(w, now, undefined, [bs, kidsSv].filter(Boolean).join(','), { stars: stars.length === 1 ? stars[0] : 0, rating: rate }).catch(() => []),
+    tvSearch(w, now, undefined, cs, { stars: one, rating: rate }).catch(() => []),
+    withUai ? tvSearch(w, now, undefined, bs, { stars: one, rating: rate, meal: MEAL_IDS.at(-1) }).catch(() => []) : [],
+    withUai ? tvSearch(w, now, undefined, cs, { stars: one, rating: rate, meal: MEAL_IDS.at(-1) }).catch(() => []) : [],
   ]);
-  const res = { hotels: [...new Map(found.flat().map(h => [h.id, h])).values()], concept };
+  const merge = lists => [...lists.flat().reduce((m, h) => (!m.has(h.id) || h.price < m.get(h.id).price ? m.set(h.id, h) : m), new Map()).values()]; // у отеля — самая низкая цена
+  const res = { hotels: merge([...found, uai]), concept: merge([concept, conceptUai]) };
   await env.TOURS.put(key, JSON.stringify(res), { expirationTtl: 1800 });
   return res;
 }
@@ -499,7 +508,7 @@ function step(w, data, now) {
     const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
     const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
     const rank = ([c, i]) => (hot.has(c) ? 0 : i < POPULAR_COUNTRIES ? 1 : 2); // сначала с горящими, потом популярные, потом остальные (внутри — по порядку списка)
-    const btns = COUNTRIES.map((c, i) => [c, i]).filter(([c]) => !(ok.length && !ok.includes(COUNTRY_IDS[c]))).sort((a, b) => rank(a) - rank(b) || a[1] - b[1])
+    const btns = COUNTRIES.map((c, i) => [c, i]).filter(([c]) => !HIDDEN_COUNTRIES.has(c) && !(ok.length && !ok.includes(COUNTRY_IDS[c]))).sort((a, b) => rank(a) - rank(b) || a[1] - b[1])
       .map(([c, i]) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
     return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3), back(w, { ...w, f: '' })] };
   }
@@ -530,7 +539,7 @@ export function matches(w, data, now) {
   const [, from, to] = periods(now)[+w.p];
   return data.items.filter(t => {
     const { date, nights, meal } = tourInfo(t, now);
-    return depOf(t) === DEPARTURES[+w.d][0] && (!country || t.country === country) && (!resorts.length || resorts.some(r => (t.title + ' ' + t.descr).toLowerCase().includes(r))) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
+    return depOf(t) === DEPARTURES[+w.d][0] && !HIDDEN_COUNTRIES.has(t.country) && (!country || t.country === country) && (!resorts.length || resorts.some(r => (t.title + ' ' + t.descr).toLowerCase().includes(r))) && (!nights || (nights >= nMin && nights <= nMax)) && (!date || (date >= from && date <= to))
       && (w.f === '*' || meal === undefined || meal >= +w.f)
       && hotFits(w, t);
   }).sort((a, b) => a.price - b.price).slice(0, 3); // горящих — не больше трёх

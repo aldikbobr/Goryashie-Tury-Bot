@@ -149,9 +149,10 @@ const wizard = async (city = 'Астана') => {
   assert.deepEqual(texts(), ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено', NB]);
   await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
   const countryBtns = texts().filter(t => t !== NB);
-  if (city === 'Астана') assert.equal(countryBtns.length, 44); // «Любая страна» + 43 страны Tourvisor
+  assert.ok(!countryBtns.some(c => ['Чехия', 'Франция', 'Сербия', 'Словения', 'Венгрия', 'Россия', 'Австрия', 'Италия', 'Сингапур'].includes(c.replace('🔥 ', '')))); // скрытые страны не показываются
+  if (city === 'Астана') assert.equal(countryBtns.length, 35); // «Любая страна» + 43 страны Tourvisor без девяти скрытых
   else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
-  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 8), [hot + 'Таиланд', hot + 'ОАЭ', 'Турция', 'Египет', 'Россия', 'Китай', 'Вьетнам']); // 🔥 — есть горящие туры (только вылет из Астаны)
+  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 8), [hot + 'Таиланд', hot + 'ОАЭ', 'Турция', 'Египет', 'Китай', 'Вьетнам', 'Азербайджан']); // 🔥 — есть горящие туры (только вылет из Астаны)
   await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорты/);
   // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
   // 🔥 у курорта — по нему есть горящие туры (в проверке только вылет из Астаны)
@@ -201,7 +202,11 @@ assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].u
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
 // второй поиск идёт с фильтром Tourvisor «Только для взрослых» (services=48): в общую выдачу самых дешёвых отелей такие отели почти не попадают
-assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams.get('services')), [null, '3']); // в проверке едут с ребёнком: «Мини-клуб»; для взрослых — 48
+const mq = tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams);
+assert.deepEqual(mq.map(q => q.get('services')), [null, '3', null, '3']);
+// питание «Только завтрак и лучше»: Tourvisor не отдаёт «Ультра всё включено», поэтому его ищем отдельно (питание 9) — те же основной поиск и концепция
+assert.deepEqual(mq.map(q => q.get('meal')), ['3', '3', '9', '9']);
+// // в проверке едут с ребёнком: «Мини-клуб»; для взрослых — 48
 const cmsg = sent.find(m => /ДЕТСКАЯ КОНЦЕПЦИЯ/.test(m.text || ''));
 assert.match(cmsg.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n─+\n/); // тонкое подчёркивание под названием подгруппы
 assert.match(cmsg.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n─+\n/);
@@ -610,6 +615,19 @@ sent.length = 0;
 await doSearch(5);
 assert.deepEqual(sent.filter(m => m.method === 'deleteMessages' && m.chat_id === 950).flatMap(m => m.message_ids).includes(1002), true); // пятый — удалён второй
 assert.equal(keep().length, 3);
+
+// питание: «Ультра всё включено» — самое высокое, отдельного дополнительного поиска не нужно; «любое» тоже
+for (const f of ['5', '*']) {
+  for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
+  tvCalls.length = 0;
+  await post('/tg', { callback_query: { id: 'q', data: `w:2:2:0::1:0:${f}:*:0:*:*:*:0`, from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+  assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams.get('meal')), f === '5' ? ['9', '9'] : ['0', '0']);
+}
+// питание «Полный пансион и лучше»: в основном поиске FB (5), плюс отдельно UAI (9)
+for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
+tvCalls.length = 0;
+await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:3:*:0:*:*:*:0', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u).searchParams.get('meal')), ['5', '5', '9', '9']);
 
 // ---- статистика и пульт ----
 const sdb = new DatabaseSync(':memory:');
