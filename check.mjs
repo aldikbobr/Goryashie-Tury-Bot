@@ -546,6 +546,10 @@ assert.ok(!sent.some(m => /РЕЙТИНГ 4,5–5/.test(m.text || ''))); // эт
 // ссылки на отели ведут на сайт туроператора KOMPAS, если отель там есть; иначе — прежняя ссылка на поиск Tourvisor
 assert.equal(kompasUrl('Турция', 'ARSI BLUE BEACH HOTEL (EX. KEMALHAN BEACH)'), 'https://kompastour.com/kz/rus/country/turkey/alanya/arsi_blue_beach_hotel/');
 assert.equal(kompasUrl('Китай', 'Sanya New City'), 'https://kompastour.com/kz/rus/country/china/hainan/sanya_new_city/'); // пример Аслана
+assert.equal(kompasUrl('Вьетнам', 'WYNDHAM GRAND PHU QUOC'), 'https://kompastour.com/kz/rus/country/vietnam/fukuok/wyndham_grand_phuquoc_resort/'); // пример Аслана: «Phu Quoc» и «phuquoc» — один отель
+assert.equal(kompasUrl('Вьетнам', 'WYNDHAM GRAND PHU QUOC RESORT'), 'https://kompastour.com/kz/rus/country/vietnam/fukuok/wyndham_grand_phuquoc_resort/');
+assert.equal(kompasUrl('Вьетнам', 'SELINA HOTEL (THUY NGA HOTEL)'), 'https://kompastour.com/kz/rus/country/vietnam/fukuok/selina_hotel/'); // название в скобках без «ex.»
+assert.equal(kompasUrl('Турция', 'NOVIS HOTEL CLEOPATRA (EX. BILKAY)'), 'https://kompastour.com/kz/rus/country/turkey/alanya/kleopatra_bilkay_hotel/'); // по прежнему названию
 assert.equal(kompasUrl('Турция', 'NO SUCH HOTEL XYZ'), null);
 assert.equal(kompasUrl('Россия', 'Любой'), null); // у KOMPAS нет такой страны
 const kw = { ...wp, c: '0', st: '*', rt: '*' }; // страна 0 = Турция
