@@ -32,6 +32,26 @@ export async function snapshotSubs(env, tg) {
   } catch { return null; }
 }
 
+// Журнал изменений: правки кода берём из истории публичной копии репозитория (каждая публикация бота = запись с описанием), настройки — из событий пульта.
+// Ответ GitHub кэшируется на 10 минут средствами Cloudflare (в базу и KV ничего не пишем).
+async function commits() {
+  try {
+    const url = 'https://api.github.com/repos/aldikbobr/Goryashie-Tury-Bot/commits?per_page=40';
+    const cache = typeof caches !== 'undefined' ? caches.default : null;
+    let r = cache ? await cache.match(url) : null;
+    if (!r) {
+      r = await fetch(url, { headers: { 'user-agent': 'goryashie-panel', accept: 'application/vnd.github+json' } });
+      if (!r.ok) return [];
+      if (cache) { const c = new Response(r.clone().body, r); c.headers.set('cache-control', 'max-age=600'); await cache.put(url, c); }
+    }
+    return (await r.json()).map(c => ({ ts: Date.parse(c.commit.author.date), text: c.commit.message.split('\n')[0], src: 'код' }));
+  } catch { return []; }
+}
+async function changes(env) {
+  const cfg = (await all(env, "SELECT ts, val FROM events WHERE type = 'cfg' ORDER BY ts DESC LIMIT 20")).map(r => ({ ts: r.ts, text: 'Настройка в пульте: ' + r.val, src: 'пульт' }));
+  return [...(await commits()), ...cfg].sort((a, b) => b.ts - a.ts).slice(0, 30);
+}
+
 const all = async (env, sql, ...b) => (await env.DB.prepare(sql).bind(...b).all()).results || [];
 
 export async function report(env, from, to, tg) {
@@ -49,6 +69,7 @@ export async function report(env, from, to, tg) {
     byDay: await all(env, `SELECT day, COUNT(DISTINCT uid) users, SUM(type = 'search') searches FROM events WHERE ${w} GROUP BY day ORDER BY day DESC`, from, to),
     topCountries: tally(0), topAirports: tally(1),
     links: (await all(env, "SELECT val, COUNT(*) n FROM events WHERE type = 'link' AND day BETWEEN ? AND ? GROUP BY val ORDER BY n DESC LIMIT 20", from, to)).map(r => [r.val, r.n]),
+    changes: await changes(env),
     subsNow, subsDelta: subsNow !== null && before !== undefined ? subsNow - before : null,
   };
 }
@@ -62,6 +83,7 @@ export async function setCfg(env, path, value) {
   else if (/^posts\.(news|weather|tours|evening|hot)$/.test(path) && typeof value === 'boolean') c.posts[path.slice(6)] = value;
   else return { ok: false, error: 'неизвестная настройка' };
   await env.TOURS.put('cfg', JSON.stringify(c));
+  await track(env, 'cfg', 0, path + ' = ' + value);
   return { ok: true };
 }
 

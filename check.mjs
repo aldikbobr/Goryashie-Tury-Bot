@@ -32,6 +32,7 @@ globalThis.fetch = async (url, o) => {
   if (url.includes('open-meteo')) return Response.json({ daily: url.includes('latitude=51.17')
     ? { temperature_2m_max: [-3.4], temperature_2m_min: [-10.2], weather_code: [73] }
     : { temperature_2m_max: [31.2], temperature_2m_min: [25], weather_code: [1] } });
+  if (url.includes('api.github.com')) return Response.json([{ commit: { author: { date: '2026-11-12T08:00:00Z' }, message: 'Кнопка Назад на каждом шаге\n\nподробности' } }]);
   if (url.includes('kursiv')) return new Response(rss([['SCAT возьмет в лизинг два Boeing', 'https://k/1'], ['Курс тенге вырос', 'https://k/2']]));
   if (url.includes('inform.kz')) return new Response('down', { status: 500 });
   if (url.includes('tourdom')) return new Response(rss([['Анапа получила статус курорта', 'https://t/1'], ['SCAT возьмет в лизинг два Boeing', 'https://t/dup']]));
@@ -505,4 +506,8 @@ const runNews = await worker.fetch(new Request('https://x/run?job=news', { metho
 assert.equal((await runNews.json()).skipped, 'выключено в пульте');
 assert.equal((await setCfgReq('posts.news', true)).ok, true);
 assert.equal((await setCfgReq('concept', true)).ok, true);
+// журнал изменений: правки бота (из истории публикаций) и настройки из пульта попадают в пульт сами
+const log = (await (await panelGet(`/panel/api?from=${today9}&to=${today9}`, 'secret-key')).json()).changes;
+assert.ok(log.some(c => c.src === 'код' && c.text === 'Кнопка Назад на каждом шаге'));
+assert.ok(log.some(c => c.src === 'пульт' && c.text === 'Настройка в пульте: posts.news = false'));
 console.log('OK');

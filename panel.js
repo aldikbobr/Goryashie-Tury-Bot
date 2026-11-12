@@ -37,7 +37,8 @@ select,input[type=date]{font:inherit;padding:8px;border-radius:8px;border:1px so
 <h2>Что выбирают в подборе</h2><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))"><div id="top1"></div><div id="top2"></div></div>
 <h2>Переходы по отслеживаемым ссылкам</h2><div id="links"></div>
 <h2>Управление</h2><div class="box" id="ctl"></div>
-<p class="mut">Изменения применяются сразу. Статистика считается с 12 ноября 2026, время по Астане.</p>
+<h2>Журнал изменений</h2><div class="box" id="log"></div>
+<p class="mut">Изменения применяются сразу. Все правки бота и канала, которые делает Claude, сами попадают в журнал. Статистика считается с 12 ноября 2026, время по Астане.</p>
 </div><div id="toast"></div>
 <script>
 var KEY = location.hash.slice(1), FIRST = '2026-11-12';
@@ -77,6 +78,7 @@ function load() {
     $('top1').innerHTML = '<div class="mut" style="margin-bottom:4px">Страны</div>' + bars(d.topCountries, 'пока нет подборок');
     $('top2').innerHTML = '<div class="mut" style="margin-bottom:4px">Города вылета</div>' + bars(d.topAirports, 'пока нет подборок');
     $('links').innerHTML = d.links.length ? bars(d.links, '') : '<div class="mut">Пока нет. Отслеживаемые ссылки: ' + location.origin + '/go/bot/instagram, /go/bot/whatsapp, /go/channel/instagram, /go/channel/whatsapp (вместо instagram и whatsapp можно писать любое слово — оно появится здесь).</div>';
+    $('log').innerHTML = d.changes.length ? d.changes.map(function (c) { var t = new Date(c.ts + 5 * 3600000).toISOString(); return '<div class="row"><div>' + esc(c.text) + '<div class="mut">' + t.slice(8, 10) + '.' + t.slice(5, 7) + ' ' + t.slice(11, 16) + ' · ' + c.src + '</div></div></div>'; }).join('') : '<div class="row mut">Пока пусто</div>';
     ctl(d.cfg);
   }).catch(function (e) { $('msg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
 }
