@@ -583,6 +583,34 @@ tvCalls.length = 0; sent.length = 0;
 await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:6.5.7:0:*:*:*:0', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
 assert.equal(new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams.get('regions'), '6,5,7');
 
+// правило «хранятся последние три поиска» на настоящем ходе подбора: четыре подряд сделанных поиска → первый удалён, остались три
+kv.set('kb2:950', '1');
+const FINAL = 'w:2:2:0::1:0:*:*:0:*:*:*:0'; // все ответы даны — запускается поиск
+const doSearch = async n => {
+  await post('/tg', { message: { chat: { id: 950 }, from: { id: 950 }, message_id: 1000 + n, text: '🔎 Подобрать тур за 1 минуту' } }, TG); // нажатие кнопки = начало поиска
+  await post('/tg', { callback_query: { id: 'k' + n, data: FINAL, from: { id: 950 }, message: { chat: { id: 950 }, message_id: 5000 + n } } }, TG); // поиск завершён
+};
+const keep = () => JSON.parse(kv.get('m:950'));
+sent.length = 0;
+await doSearch(1); await doSearch(2); await doSearch(3);
+assert.equal(keep().length, 3);
+assert.ok(keep().every(x => x.done));
+assert.ok(!sent.some(m => m.method === 'deleteMessages' && m.chat_id === 950)); // три поиска — ничего не удаляется
+const first = keep()[0].ids;
+assert.ok(first.includes(1001)); // в первом поиске — нажатие кнопки
+sent.length = 0;
+await doSearch(4);
+const del = sent.filter(m => m.method === 'deleteMessages' && m.chat_id === 950);
+assert.deepEqual(del.flatMap(m => m.message_ids).sort((a, b) => a - b), [...first].sort((a, b) => a - b)); // удалён весь первый поиск и только он
+const after = keep();
+assert.equal(after.length, 3); // остались три последних
+assert.ok(after.every(x => x.done));
+assert.ok(after[2].ids.includes(1004) && !after.some(x => x.ids.includes(1001)));
+sent.length = 0;
+await doSearch(5);
+assert.deepEqual(sent.filter(m => m.method === 'deleteMessages' && m.chat_id === 950).flatMap(m => m.message_ids).includes(1002), true); // пятый — удалён второй
+assert.equal(keep().length, 3);
+
 // ---- статистика и пульт ----
 const sdb = new DatabaseSync(':memory:');
 sdb.exec(readFileSync('schema.sql', 'utf8'));
