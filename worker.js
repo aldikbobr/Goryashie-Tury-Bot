@@ -812,7 +812,7 @@ export default {
   // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
     // горящие туры обновляются с открытой страницы Tourvisor перед постами и днём
-    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'], '0 19 * * *': ['clean'] }[event.cron] || ['scrape', 'tours'];
+    const jobs = { '0 10 * * *': ['news', 'scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'], '0 19 * * *': ['clean'] }[event.cron] || ['scrape', 'tours'];
     ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };
