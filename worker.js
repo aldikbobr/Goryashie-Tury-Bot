@@ -383,6 +383,22 @@ const remember = async (env, chat_id, ids) => {
   await env.TOURS.put('m:' + chat_id, JSON.stringify([...old, ...ids].slice(-100)), { expirationTtl: 3 * DAY / 1000 });
 };
 
+// Ночью (00:00 по Астане) удаляем в чатах бота все сохранённые подборки, чтобы они не копились
+export async function cleanChats(env) {
+  let cursor, chats = 0, deleted = 0;
+  do {
+    const page = await env.TOURS.list({ prefix: 'm:', cursor });
+    for (const { name } of page.keys) {
+      const ids = JSON.parse((await env.TOURS.get(name)) || '[]');
+      for (let i = 0; i < ids.length; i += 100) await tg(env, 'deleteMessages', { chat_id: name.slice(2), message_ids: ids.slice(i, i + 100) });
+      await env.TOURS.delete(name);
+      chats++; deleted += ids.length;
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return { chats, deleted };
+}
+
 async function startWizard(env, chat_id, data, now) {
   const old = JSON.parse((await env.TOURS.get('m:' + chat_id)) || '[]');
   if (old.length) await tg(env, 'deleteMessages', { chat_id, message_ids: old });
@@ -475,6 +491,7 @@ async function onTelegram(req, env, ctx) {
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
+  await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>Последняя подборка</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
   if (w.c !== '*') {
     const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
     let groups = null;
@@ -729,6 +746,7 @@ async function postEvening(env, now) {
 }
 
 async function runChannel(env, job, now = new Date()) {
+  if (job === 'clean') return { ok: true, ...(await cleanChats(env)) };
   if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
   try {
     if (job === 'news') {
@@ -794,7 +812,7 @@ export default {
   // расписание (wrangler.jsonc), время Астаны = UTC+5: 10:00 — подборка дня, 14:00 — новости, 15:00 — погода, 19:00 — вечерний пост-призыв и сразу за ним горящие туры
   async scheduled(event, env, ctx) {
     // горящие туры обновляются с открытой страницы Tourvisor перед постами и днём
-    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'] }[event.cron] || ['scrape', 'tours'];
+    const jobs = { '0 9 * * *': ['news'], '0 10 * * *': ['scrape', 'weather'], '0 14 * * *': ['scrape', 'evening', 'hot'], '0 19 * * *': ['clean'] }[event.cron] || ['scrape', 'tours'];
     ctx.waitUntil((async () => { for (const j of jobs) await runChannel(env, j); })());
   },
 };

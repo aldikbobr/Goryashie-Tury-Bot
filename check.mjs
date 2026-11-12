@@ -55,7 +55,7 @@ globalThis.fetch = async (url, o) => {
 };
 const kv = new Map();
 const env = { BOT_TOKEN: 't', UPDATE_SECRET: 's', TG_SECRET: 'g', ADMIN_CODE: 'abc', CHANNEL_ID: '@ch', CONTACT_URL: 'https://wa.me/1', POSTS_PER_UPDATE: '2', TOUR_LINK: 'https://tourcart.ru/#tvofferid={id}',
-  TOURS: { get: async k => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async k => kv.delete(k) } };
+  TOURS: { get: async k => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async k => kv.delete(k), list: async ({ prefix }) => ({ keys: [...kv.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })), list_complete: true }) } };
 const pending = [];
 const ctx = { waitUntil: p => pending.push(p) };
 const post = async (path, body, headers) => { const r = await worker.fetch(new Request('https://x' + path, { method: 'POST', body: JSON.stringify(body), headers }), env, ctx); await Promise.all(pending.splice(0)); return r; };
@@ -148,12 +148,13 @@ await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
 assert.match(sent[1].text, /Вылет: Астана\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
-assert.match(sent[2].text, /Ищу туры/);
-assert.equal(sent[3].method, 'deleteMessage');
+assert.match(sent[2].text, /🟦{10}\n👇 <b>Последняя подборка<\/b>/u); // синий разделитель перед каждой свежей подборкой
+assert.match(sent[3].text, /Ищу туры/);
+assert.equal(sent[4].method, 'deleteMessage');
 // в поиск Tourvisor ушли параметры клиента
 const sq = new URL(tvCalls.find(u => u.includes('modsearch'))).searchParams;
 assert.deepEqual(['country', 'regions', 'departure', 'adults', 'child', 'childage1', 'meal', 'nightsfrom', 'nightsto', 'currency'].map(k => sq.get(k)), ['2', '6', '59', '2', '1', '5', '3', '6', '9', '3']);
-const groups = sent.slice(4, 7);
+const groups = sent.slice(5, 8);
 // оформление «Цветные метки»: линии, 🟢/🟡/🟠 по рейтингу, ⭐ по числу звёзд
 assert.deepEqual(groups.map(m => m.text.match(/(🟢|🟡|🟠) <b>РЕЙТИНГ ([^<]+)</).slice(1).join(' ')), ['🟢 4,5–5', '🟡 4–4,5', '🟠 3,7–4']);
 assert.match(groups[0].text, /^━+\n🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n━+\n1️⃣ <b>ALPHA RESORT<\/b>\n {6}⭐⭐⭐⭐⭐  🟢 <b>4,8<\/b>\n {6}Пхукет · 06\.12 · 7 ноч\. · BB - Завтрак\n {6}💰 <b>100\s000 ₸<\/b>/);
@@ -176,8 +177,8 @@ assert.deepEqual(tvCalls.filter(u => u.includes('modsearch')).map(u => new URL(u
 const cmsg = sent.find(m => /ДЕТСКАЯ КОНЦЕПЦИЯ/.test(m.text || ''));
 assert.match(cmsg.text, /🟢 <b>РЕЙТИНГ 4,5–5<\/b>\n─+\n/); // тонкое подчёркивание под названием подгруппы
 assert.match(cmsg.text, /🌟 <b>ПЯТЬ ЗВЁЗД<\/b>\n─+\n/);
-const resultIds = Array.from({ length: 9 }, (_, i) => msgId - 8 + i); // 3 по рейтингу, 3 по звёздности, раздел концепции (из отдельного поиска), фото тура, кнопка заявки
-assert.deepEqual(sent.slice(7, 10).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
+const resultIds = [msgId - 11, ...Array.from({ length: 9 }, (_, i) => msgId - 8 + i)]; // 3 по рейтингу, 3 по звёздности, раздел концепции (из отдельного поиска), фото тура, кнопка заявки
+assert.deepEqual(sent.slice(8, 11).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
 const hx = [{ name: 'A', stars: 5, rating: 4.6, price: 1, adult: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }, { name: 'B', stars: 4, rating: 4.2, price: 2, kids: true, date: '06.12.2026', nights: 7, meal: 'BB', region: 'X' }];
 const cm = k => conceptMessages({ k, a: '2', ages: [], c: '0', n: '1', p: '0', f: '*', r: '', d: '0' }, new Date('2026-11-12'), hx);
 const adultMsg = cm('0'), kidsMsg = cm('2');
@@ -392,4 +393,13 @@ sent.length = 0;
 await post('/tg', { callback_query: { id: 'c', data: 'chk', from: { id: 56 }, message: { chat: { id: 56 }, message_id: 9 } } }, TG);
 assert.match(sent.find(m => m.method === 'sendMessage').text, /аэропорт/); // подписан — начинается подбор
 delete env.OPEN_UNTIL;
+// ночная очистка (00:00 по Астане = 19:00 UTC): подборки во всех чатах бота удаляются, записи в базе очищаются
+kv.set('m:701', JSON.stringify([1, 2, 3])); kv.set('m:702', JSON.stringify([4]));
+sent.length = 0;
+await worker.scheduled({ cron: '0 19 * * *' }, env, ctx);
+await Promise.all(pending.splice(0));
+const dels = sent.filter(m => m.method === 'deleteMessages' && String(m.chat_id).startsWith('70')); // другие чаты теста тоже очищаются
+assert.deepEqual(dels.map(m => [m.chat_id, m.message_ids]).sort(), [['701', [1, 2, 3]], ['702', [4]]].sort());
+assert.ok(![...kv.keys()].some(k => k.startsWith('m:')));
+assert.ok(!sent.some(m => m.method === 'sendMessage')); // в этот час ничего не публикуется
 console.log('OK');
