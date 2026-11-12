@@ -225,9 +225,14 @@ export async function tvSearch(w, now, wait = ms => new Promise(r => setTimeout(
   }
   return [...best.values()].map(h => {
     const d = data.decode.hotels[h.id] || {};
-    return { ...h, name: d.name || 'Отель', rating: parseFloat(d.rating) || 0, stars: +d.stars || 0, region: d.region || '', meal: data.decode.meal?.[h.ml]?.nameshort || '' };
+    const descr = String(d.desc || '');
+    const adult = ADULT_RE.test(descr); // концепция только по описанию отеля: у Tourvisor отдельного признака нет
+    return { ...h, name: d.name || 'Отель', rating: parseFloat(d.rating) || 0, stars: +d.stars || 0, region: d.region || '', meal: data.decode.meal?.[h.ml]?.nameshort || '', adult, kids: !adult && KIDS_RE.test(descr) };
   });
 }
+
+const ADULT_RE = /только для взрослых|adults? only|(?:^|\D)(?:16|18)\s?\+|гостей старше (?:16|18)/i;
+const KIDS_RE = /аквапарк|водные горки|водных горок|мини-клуб|детск(?:ий|ая|ое|ой|ую|ие|их) (?:клуб|площадк|бассейн|горк|анимац|меню|программ|комнат)|для детей/i;
 
 export function groupHotels(hotels) {
   return GROUPS.map(([title, from, to, rating]) => ({
@@ -250,10 +255,20 @@ function hotelCard(h, i, place, link) {
     `      ${esc(place)} · ${h.date.slice(0, 5)} · ${h.nights} ноч. · ${esc(h.meal)}\n      💰 <b>${money(h.price)}</b>`;
 }
 
+// дополнительные подборки по звёздности и концепции (взрослая 16+/18+ — если едут только взрослые, детская — если с детьми)
+const cheapest3 = list => [...list].sort((a, b) => a.price - b.price).slice(0, 3);
+export function extraGroups(w, hotels) {
+  const stars = STAR_GROUPS.map(([title, s]) => ({ head: `🌟 <b>${title}</b>`, rating: 0, hotels: cheapest3(hotels.filter(h => h.stars === s && h.rating >= 3.7)) }));
+  const concept = +w.k
+    ? { head: '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>', rating: 0, hotels: cheapest3(hotels.filter(h => h.kids && h.rating >= 3.7)) }
+    : { head: '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>', rating: 0, hotels: cheapest3(hotels.filter(h => h.adult && h.rating >= 3.7)) };
+  return [...stars, concept].filter(g => g.hotels.length); // пустые разделы не показываем
+}
+
 function groupMessage(w, now, g) {
   const cards = g.hotels.map((h, i) => hotelCard(h, i, h.region));
   return {
-    text: groupHeader(ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
+    text: groupHeader(g.head || ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
     kb: [
       ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: searchLink(w, now, 0, h) }]),
       [{ text: 'Все варианты на Tourvisor', url: searchLink(w, now, g.rating) }],
@@ -416,7 +431,8 @@ async function results(env, w, now, chat_id, data, sum) {
     const wait = await send({ text: '🔎 Ищу туры у всех туроператоров, это займёт до 20 секунд…' });
     let groups = null;
     try {
-      groups = groupHotels(await ratingSelections(env, w, now));
+      const hotels = await ratingSelections(env, w, now);
+      groups = [...groupHotels(hotels), ...extraGroups(w, hotels)]; // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }

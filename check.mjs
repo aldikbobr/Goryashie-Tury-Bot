@@ -1,6 +1,6 @@
 // Проверка бота без Telegram и без Tourvisor: node check.mjs
 import assert from 'node:assert';
-import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, extraGroups, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -169,7 +169,12 @@ assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['ht
 assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nТуристы: 2 взр\./);
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
-const resultIds = [msgId - 4, msgId - 3, msgId - 2, msgId - 1, msgId]; // 3 подборки, фото тура, кнопка заявки
+const resultIds = Array.from({ length: 8 }, (_, i) => msgId - 7 + i); // 3 подборки по рейтингу, 3 по звёздности, фото тура, кнопка заявки
+assert.deepEqual(sent.slice(7, 10).map(g => g.text.match(/РЕЙТИНГ [d,–]+|ПЯТЬ ЗВЁЗД|ЧЕТЫРЕ ЗВЕЗДЫ|ТРИ ЗВЕЗДЫ|КОНЦЕПЦИЯ/)?.[0]), ['ПЯТЬ ЗВЁЗД', 'ЧЕТЫРЕ ЗВЕЗДЫ', 'ТРИ ЗВЕЗДЫ']); // нет «взрослых» отелей — раздела концепции нет
+const eg = (k, hs) => extraGroups({ k }, hs).map(g => g.head);
+const hx = [{ stars: 5, rating: 4.6, price: 1, adult: true }, { stars: 4, rating: 4.2, price: 2, kids: true }];
+assert.deepEqual(eg('0', hx), ['🌟 <b>ПЯТЬ ЗВЁЗД</b>', '🌟 <b>ЧЕТЫРЕ ЗВЕЗДЫ</b>', '🔞 <b>ВЗРОСЛАЯ КОНЦЕПЦИЯ 16+ / 18+</b>']);
+assert.deepEqual(eg('2', hx), ['🌟 <b>ПЯТЬ ЗВЁЗД</b>', '🌟 <b>ЧЕТЫРЕ ЗВЕЗДЫ</b>', '🧒 <b>ДЕТСКАЯ КОНЦЕПЦИЯ</b>']);
 
 // «Подобрать тур» удаляет старую подборку (шаги, результаты, само нажатие) и начинает заново
 sent.length = 0;
