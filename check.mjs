@@ -140,9 +140,9 @@ const wizard = async (city = 'Астана') => {
   await press('1'); assert.match(sent.at(-1).text, /Возраст 1-го ребёнка/);
   assert.deepEqual(texts(), ['до 2', ...Array.from({ length: 16 }, (_, i) => String(i + 2)), NB]);
   await press('5'); assert.match(sent.at(-1).text, /Звёздность отеля/);
-  assert.deepEqual(texts(), ['⭐⭐⭐⭐⭐ 5 звёзд', '⭐⭐⭐⭐ 4 звезды', '⭐⭐⭐ 3 звезды', 'Любая звёздность', NB]);
+  assert.deepEqual(texts(), ['⬜ ⭐⭐⭐⭐⭐ 5 звёзд', '⬜ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды', 'Готово ▶', 'Любая звёздность', NB]);
   await press('Любая звёздность'); assert.match(sent.at(-1).text, /Рейтинг отеля/);
-  assert.deepEqual(texts(), ['🟢 4,5–5', '🟡 4–4,5', '🟠 3,7–4', 'От 3,7 до 5', 'Любой рейтинг', NB]);
+  assert.deepEqual(texts(), ['⬜ 🟢 4,5–5', '⬜ 🟡 4–4,5', '⬜ 🟠 3,7–4', 'Готово ▶', 'От 3,7 до 5', 'Любой рейтинг', NB]);
   await press('Любой рейтинг'); assert.match(sent.at(-1).text, /Пляж/);
   assert.deepEqual(texts(), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж', 'Готово ▶', NB]);
   await press('Готово ▶'); assert.match(sent.at(-1).text, /Питание/); // ничего не отмечено — любой пляж
@@ -455,25 +455,35 @@ m9 = await go9(m9, NB); assert.match(m9.text, /Сколько детей/); // �
 m9 = await go9(m9, 'Без детей'); assert.match(m9.text, /Звёздность отеля/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Сколько детей/); // без детей: из звёздности назад к числу детей
 m9 = await go9(m9, 'Без детей');
-m9 = await go9(m9, '⭐⭐⭐⭐ 4 звезды'); assert.match(m9.text, /Звёздность: 4★\n\n👉 Рейтинг отеля/);
+// звёздность: можно выбрать несколько вариантов и нажать «Готово»
+const mk = m => m.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 3);
+m9 = await go9(m9, '⬜ ⭐⭐⭐⭐ 4 звезды'); assert.deepEqual(mk(m9), ['⬜ ⭐⭐⭐⭐⭐ 5 звёзд', '✅ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды']);
+m9 = await go9(m9, '⬜ ⭐⭐⭐⭐⭐ 5 звёзд'); assert.deepEqual(mk(m9), ['✅ ⭐⭐⭐⭐⭐ 5 звёзд', '✅ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды']);
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Звёздность: 5★ и 4★\n\n👉 Рейтинг отеля/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Звёздность отеля/);
+assert.deepEqual(mk(m9), ['⬜ ⭐⭐⭐⭐⭐ 5 звёзд', '⬜ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды']); // выбор сброшен
+m9 = await go9(m9, '⬜ ⭐⭐⭐⭐ 4 звезды');
+m9 = await go9(m9, '✅ ⭐⭐⭐⭐ 4 звезды'); assert.deepEqual(mk(m9), ['⬜ ⭐⭐⭐⭐⭐ 5 звёзд', '⬜ ⭐⭐⭐⭐ 4 звезды', '⬜ ⭐⭐⭐ 3 звезды']); // отметку можно снять
 m9 = await go9(m9, 'Любая звёздность'); assert.match(m9.text, /Звёздность: любая/);
 m9 = await go9(m9, NB);
-m9 = await go9(m9, '⭐⭐⭐⭐ 4 звезды');
-m9 = await go9(m9, '🟢 4,5–5'); assert.match(m9.text, /Рейтинг: 4,5–5\n\n👉 Пляж/);
+m9 = await go9(m9, '⬜ ⭐⭐⭐⭐ 4 звезды');
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Звёздность: 4★\n\n👉 Рейтинг отеля/);
+// рейтинг: тоже несколько групп
+m9 = await go9(m9, '⬜ 🟢 4,5–5'); m9 = await go9(m9, '⬜ 🟡 4–4,5');
+assert.deepEqual(mk(m9), ['✅ 🟢 4,5–5', '✅ 🟡 4–4,5', '⬜ 🟠 3,7–4']);
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Рейтинг: 4,5–5 и 4–4,5\n\n👉 Пляж/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Рейтинг отеля/);
-m9 = await go9(m9, '🟢 4,5–5');
-// пляж: три галочки «Любой пляж», «Первая береговая линия», «Песчаный пляж»; «любой» и «первая линия» вместе не ставятся, «любой» + «песчаный» можно
+m9 = await go9(m9, '⬜ 🟢 4,5–5');
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Рейтинг: 4,5–5\n\n👉 Пляж/);
+// пляж: три галочки «Любой пляж», «Первая береговая линия», «Песчаный пляж» — любые сочетания, в том числе «любой» + «первая линия»
 const marks = m => m.reply_markup.inline_keyboard.flat().map(b => b.text).slice(0, 3);
 assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']);
-m9 = await go9(m9, '⬜ Песчаный пляж'); assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '✅ Песчаный пляж']);
-m9 = await go9(m9, '⬜ Первая береговая линия'); assert.deepEqual(marks(m9), ['⬜ Любой пляж', '✅ Первая береговая линия', '✅ Песчаный пляж']);
-m9 = await go9(m9, '⬜ Любой пляж'); assert.deepEqual(marks(m9), ['✅ Любой пляж', '⬜ Первая береговая линия', '✅ Песчаный пляж']); // «любой» снял «первую линию»
-m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: любая линия и песчаный пляж\n[\s\S]*Питание/);
+m9 = await go9(m9, '⬜ Любой пляж'); m9 = await go9(m9, '⬜ Первая береговая линия');
+assert.deepEqual(marks(m9), ['✅ Любой пляж', '✅ Первая береговая линия', '⬜ Песчаный пляж']); // вместе выбираются
+m9 = await go9(m9, '⬜ Песчаный пляж'); assert.deepEqual(marks(m9), ['✅ Любой пляж', '✅ Первая береговая линия', '✅ Песчаный пляж']);
+m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: любая линия, первая береговая линия, песчаный пляж\n[\s\S]*Питание/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Пляж \(отметьте нужное/); // назад к пляжу, выбор сброшен
 assert.deepEqual(marks(m9), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']);
-m9 = await go9(m9, '⬜ Первая береговая линия');
-m9 = await go9(m9, '⬜ Любой пляж'); assert.deepEqual(marks(m9), ['✅ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж']); // «первую линию» снял «любой»
 m9 = await go9(m9, '⬜ Первая береговая линия');
 m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: первая береговая линия\n[\s\S]*Питание/);
 m9 = await go9(m9, NB);
@@ -541,6 +551,18 @@ const qb = tvCalls.filter(u => u.includes('modsearch')).map(u => Object.fromEntr
 assert.deepEqual([qb[0].services, qb[1].services], ['17', '17,48']); // песчаный пляж; для концепции — плюс «Только для взрослых»
 assert.ok(sent.some(m => /РЕЙТИНГ 4,5–5/.test(m.text || ''))); // подборка по группам рейтинга, не «по параметрам»
 assert.ok(!sent.some(m => /ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ/.test(m.text || '')));
+
+// несколько звёздностей и групп рейтинга: поиск на каждую звёздность, рейтинг — самый широкий из выбранных, отели подходят по любому из выбранных
+for (const k of [...kv.keys()]) if (k.startsWith('q3:')) kv.delete(k);
+tvCalls.length = 0; sent.length = 0;
+await post('/tg', { callback_query: { id: 'q', data: 'w:2:2:0::1:0:*:*:0:*:54:01:0', from: { id: 7 }, message: { chat: { id: 7 }, message_id: 1 } } }, TG);
+const qm = tvCalls.filter(u => u.includes('modsearch')).map(u => Object.fromEntries(new URL(u).searchParams));
+assert.deepEqual(qm.map(q => q.stars || null).sort(), ['4', '5', null]); // две звёздности + поиск концепции без звёздности
+assert.ok(qm.every(q => q.rating === '4')); // группы 4,5–5 и 4–4,5 → рейтинг от 4,0
+assert.ok(sent.some(m => /ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ/.test(m.text || '')));
+const wm = { k: '0', a: '2', ages: [], st: '54', rt: '02', by: '0', c: '0', n: '1', p: '0', f: '*', r: '*', d: '0', bd: '*' };
+pm = paramMessages(wm, new Date('2026-11-12'), [HH(1, 5, 4.8, 900000), HH(2, 4, 4.2, 800000), HH(3, 4, 3.8, 700000), HH(4, 3, 4.6, 600000), HH(5, 5, 4.2, 500000)], [], lead9);
+assert.deepEqual([...pm[0].text.matchAll(/<b>H(\d)<\/b>/g)].map(x => x[1]), ['3', '1']); // 5★ и 4★; рейтинг 4,5–5 или 3,7–4; 3★ и 4,2 не подходят
 
 // ---- статистика и пульт ----
 const sdb = new DatabaseSync(':memory:');

@@ -327,13 +327,13 @@ async function ratingSelections(env, w, now) {
   if (cached) return JSON.parse(cached);
   const kidsSv = +w.k ? '3' : '48'; // концепция: «Мини-клуб» с детьми, «Только для взрослых» без детей
   // фильтры клиента идут прямо в поиск Tourvisor: пляж (услуги), звёздность, рейтинг; второй поиск — отели нужной концепции
-  const bs = beachServices(w), star = w.st === '*' ? 0 : +w.st;
-  const rate = { '0': 5, '1': 4, '2': 3 }[w.rt] || 3; // код рейтинга Tourvisor: 5 = от 4,5; 4 = от 4,0; 3 = от 3,5 (и «любой» — от 3,5, дальше делим сами)
-  const [hotels, concept] = await Promise.all([
-    tvSearch(w, now, undefined, bs, { stars: star, rating: rate }),
-    tvSearch(w, now, undefined, [bs, kidsSv].filter(Boolean).join(','), { stars: star, rating: rate }).catch(() => []),
+  const bs = beachServices(w), stars = STAR_SET(w) || [0]; // выбрано несколько звёздностей — по поиску на каждую (Tourvisor принимает только одну)
+  const rate = Math.min(...(RATE_SET(w) || [2]).map(g => 5 - g), 5) || 3; // группа 0 → 5, 1 → 4, 2 → 3; при нескольких берём самый широкий // код рейтинга Tourvisor: 5 = от 4,5; 4 = от 4,0; 3 = от 3,5 (и «любой» — от 3,5, дальше делим сами)
+  const [found, concept] = await Promise.all([
+    Promise.all(stars.map(st => tvSearch(w, now, undefined, bs, { stars: st, rating: rate }))),
+    tvSearch(w, now, undefined, [bs, kidsSv].filter(Boolean).join(','), { stars: stars.length === 1 ? stars[0] : 0, rating: rate }).catch(() => []),
   ]);
-  const res = { hotels, concept };
+  const res = { hotels: [...new Map(found.flat().map(h => [h.id, h])).values()], concept };
   await env.TOURS.put(key, JSON.stringify(res), { expirationTtl: 1800 });
   return res;
 }
@@ -352,28 +352,37 @@ const encode = w => ['w', w.c, w.a, w.k, w.ages.join('.'), w.n, w.p, w.f, w.r, w
 // ---------- Новые шаги: бюджет, звёздность, рейтинг, пляж ----------
 // Бюджет — цена тура в тенге за всех туристов (как в поиске Tourvisor); '*' — любой
 const BUDGETS = [['500–800 тыс. ₸', 500000, 800000], ['800 тыс. – 1,2 млн ₸', 800000, 1200000], ['1,2–2 млн ₸', 1200000, 2000000], ['2–2,5 млн ₸', 2000000, 2500000], ['2,5–3 млн ₸', 2500000, 3000000], ['от 3 млн ₸', 3000000, 0]];
-const STAR_OPTS = [['⭐⭐⭐⭐⭐ 5 звёзд', '5'], ['⭐⭐⭐⭐ 4 звезды', '4'], ['⭐⭐⭐ 3 звезды', '3'], ['Любая звёздность', '*']];
-const RATING_OPTS = [['🟢 4,5–5', '0'], ['🟡 4–4,5', '1'], ['🟠 3,7–4', '2'], ['От 3,7 до 5', 'r']]; // сетка подборок; и «Любой рейтинг» = '*'
-// пляж: три отметки (галочки): «Любой пляж» (4), «Первая береговая линия» (1, услуга Tourvisor 15), «Песчаный пляж» (2, услуга 17); «любой» и «первая линия» исключают друг друга
+const STAR_OPTS = [['⭐⭐⭐⭐⭐ 5 звёзд', '5'], ['⭐⭐⭐⭐ 4 звезды', '4'], ['⭐⭐⭐ 3 звезды', '3']]; // и «Любая звёздность» = '*'
+const RATING_OPTS = [['🟢 4,5–5', '0'], ['🟡 4–4,5', '1'], ['🟠 3,7–4', '2']]; // сетка подборок; и «От 3,7 до 5» = 'r', «Любой рейтинг» = '*'
+// пляж: три отметки (галочки): «Любой пляж» (4), «Первая береговая линия» (1, услуга Tourvisor 15), «Песчаный пляж» (2, услуга 17)
 const BEACH_BITS = [[4, 'Любой пляж', ''], [1, 'Первая береговая линия', '15'], [2, 'Песчаный пляж', '17']];
 const beachMask = w => (/^t?\d$/.test(w.by || '') ? +w.by.replace('t', '') : 0);
 const beachDone = w => /^\d$/.test(w.by || '');
 const beachServices = w => BEACH_BITS.filter(([bit, , sv]) => sv && beachMask(w) & bit).map(x => x[2]).join(',');
 const beachText = w => {
   const m = beachMask(w), parts = [];
-  if (m & 1) parts.push('первая береговая линия'); else if (m & 4 && m & 2) parts.push('любая линия');
+  if (m & 4 && m !== 4) parts.push('любая линия');
+  if (m & 1) parts.push('первая береговая линия');
   if (m & 2) parts.push('песчаный пляж');
-  return parts.join(' и ') || 'любой';
+  return parts.join(', ') || 'любой';
 };
-const starText = st => (st === '*' ? 'любая' : st + '★');
-const ratingText = rt => (rt === '*' ? 'любой' : rt === 'r' ? 'от 3,7 до 5' : GROUPS[+rt][0]);
+// Звёздность и рейтинг можно выбрать несколько вариантов (например 5★ и 4★). В кнопках хранится строка цифр: звёзды 3–5, рейтинг — номера групп 0–2;
+// '*' — любые, 'r' — рейтинг от 3,7 до 5; t<цифры> — отметки до нажатия «Готово»
+const STAR_SET = w => (/^[345]{1,3}$/.test(w.st || '') ? w.st.split('').map(Number) : null); // null — любая
+const RATE_SET = w => (/^[012]{1,3}$/.test(w.rt || '') ? w.rt.split('').map(Number) : null);
+const stDone = w => w.st === '*' || STAR_SET(w) !== null;
+const rtDone = w => w.rt === '*' || w.rt === 'r' || RATE_SET(w) !== null;
+const flip = (cur, d) => (cur.includes(d) ? cur.replace(d, '') : cur + d); // отметить / снять цифру
+const draft = v => (/^t[0-9]{0,3}$/.test(v || '') ? v.slice(1) : '');
+const rateRanges = w => (RATE_SET(w) ? RATE_SET(w).map(g => [GROUPS[g][1], GROUPS[g][2]]) : [[3.7, 99]]); // границы рейтинга: от, до (не включая)
+const starText = st => (st === '*' ? 'любая' : st.split('').map(x => x + '★').join(' и '));
+const ratingText = rt => (rt === '*' ? 'любой' : rt === 'r' ? 'от 3,7 до 5' : rt.split('').map(g => GROUPS[+g][0]).join(' и '));
 // выбрана ли звёздность или рейтинг — тогда подборка «по параметрам» (до 5 отелей); любая звёздность и любой рейтинг — как раньше: группы по рейтингу и звёздности (пляж работает в обоих случаях)
 const isFiltered = w => w.st !== '*' || w.rt !== '*';
 // подходит ли отель под выбор клиента
 function fits(w, h) {
-  if (w.st !== '*' && h.stars !== +w.st) return false;
-  const [, from, to] = w.rt === 'r' ? [0, 3.7, 99] : w.rt === '*' ? [0, 3.7, 99] : [0, GROUPS[+w.rt][1], GROUPS[+w.rt][2]];
-  return h.rating >= from && h.rating < to;
+  if (STAR_SET(w) && !STAR_SET(w).includes(h.stars)) return false;
+  return rateRanges(w).some(([from, to]) => h.rating >= from && h.rating < to);
 }
 // бюджет → границы цены; null — любой
 const budgetRange = w => (w.bd && w.bd !== '*' && BUDGETS[+w.bd] ? BUDGETS[+w.bd] : null);
@@ -386,8 +395,8 @@ function summary(w, data, now) {
   if (w.d) lines.push('Вылет: ' + DEPARTURES[+w.d][0]);
   if (w.bd) lines.push('Бюджет: ' + (w.bd === '*' ? 'любой' : BUDGETS[+w.bd][0]));
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
-  if (w.st) lines.push('Звёздность: ' + starText(w.st));
-  if (w.rt) lines.push('Рейтинг: ' + ratingText(w.rt));
+  if (stDone(w)) lines.push('Звёздность: ' + starText(w.st));
+  if (rtDone(w)) lines.push('Рейтинг: ' + ratingText(w.rt));
   if (beachDone(w)) lines.push('Пляж: ' + beachText(w));
   if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
   if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
@@ -415,19 +424,34 @@ function step(w, data, now) {
     const btns = [0, ...Array.from({ length: 16 }, (_, i) => i + 2)].map(a => ({ text: a === 0 ? 'до 2' : String(a), callback_data: encode({ ...w, ages: [...w.ages, String(a)] }) }));
     return { text: head + `Возраст ${w.ages.length + 1}-го ребёнка (лет):`, kb: [...rows(btns, 6), back(w, w.ages.length ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '', ages: [] })] };
   }
-  if (!w.st) return {
-    text: head + 'Звёздность отеля:',
-    kb: [...rows(STAR_OPTS.map(([text, v]) => pick(w, 'st', { text, v })), 2), back(w, +w.k ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '' })],
-  };
-  if (!w.rt) return {
-    text: head + 'Рейтинг отеля:',
-    kb: [...rows(RATING_OPTS.map(([text, v]) => pick(w, 'rt', { text, v })), 2), [pick(w, 'rt', { text: 'Любой рейтинг', v: '*' })], back(w, { ...w, st: '' })],
-  };
+  if (!stDone(w)) {
+    // звёздность: можно отметить несколько вариантов (например 5 и 4 звезды) и нажать «Готово»; отметки хранятся в кнопках как t<цифры>
+    const cur = draft(w.st);
+    const tog = d => 't' + [...flip(cur, d)].sort().reverse().join('');
+    return {
+      text: head + 'Звёздность отеля (можно выбрать несколько и нажать «Готово»):',
+      kb: [...STAR_OPTS.map(([text, d]) => [{ text: (cur.includes(d) ? '✅ ' : '⬜ ') + text, callback_data: encode({ ...w, st: tog(d) }) }]),
+        [{ text: 'Готово ▶', callback_data: encode({ ...w, st: cur || '*' }) }, pick(w, 'st', { text: 'Любая звёздность', v: '*' })],
+        back(w, +w.k ? { ...w, ages: w.ages.slice(0, -1) } : { ...w, k: '' })],
+    };
+  }
+  if (!rtDone(w)) {
+    // рейтинг: тоже можно выбрать несколько групп сетки; «От 3,7 до 5» и «Любой рейтинг» — сразу готовый выбор
+    const cur = draft(w.rt);
+    const tog = d => 't' + [...flip(cur, d)].sort().join('');
+    return {
+      text: head + 'Рейтинг отеля (можно выбрать несколько и нажать «Готово»):',
+      kb: [...RATING_OPTS.map(([text, d]) => [{ text: (cur.includes(d) ? '✅ ' : '⬜ ') + text, callback_data: encode({ ...w, rt: tog(d) }) }]),
+        [{ text: 'Готово ▶', callback_data: encode({ ...w, rt: cur || '*' }) }],
+        [pick(w, 'rt', { text: 'От 3,7 до 5', v: 'r' }), pick(w, 'rt', { text: 'Любой рейтинг', v: '*' })],
+        back(w, { ...w, st: '' })],
+    };
+  }
   if (!beachDone(w)) {
-    // пляж: три галочки («Любой пляж», «Первая береговая линия», «Песчаный пляж»); «любой» и «первая линия» не ставятся вместе, «любой» + «песчаный» можно
+    // пляж: три галочки («Любой пляж», «Первая береговая линия», «Песчаный пляж»)
     // отметки хранятся в кнопках как t<число>, «Готово» подтверждает выбор
     const m = beachMask(w);
-    const toggle = bit => { let n = m ^ bit; if (n & bit) n &= bit === 4 ? ~1 : bit === 1 ? ~4 : n; return n; };
+    const toggle = bit => m ^ bit;
     return {
       text: head + 'Пляж (отметьте нужное и нажмите «Готово»):',
       kb: [...BEACH_BITS.map(([bit, name]) => [{ text: (m & bit ? '✅ ' : '⬜ ') + name, callback_data: encode({ ...w, by: 't' + toggle(bit) }) }]),
@@ -478,11 +502,8 @@ export function matches(w, data, now) {
 export function hotFits(w, t) {
   const b = budgetRange(w);
   if (b && (t.price < b[1] || (b[2] && t.price >= b[2]))) return false;
-  if (w.st && w.st !== '*' && t.stars && t.stars !== +w.st) return false;
-  if (w.rt && w.rt !== '*' && t.rating) {
-    const [from, to] = w.rt === 'r' ? [3.7, 99] : [GROUPS[+w.rt][1], GROUPS[+w.rt][2]];
-    if (t.rating < from || t.rating >= to) return false;
-  }
+  if (STAR_SET(w) && t.stars && !STAR_SET(w).includes(t.stars)) return false;
+  if (w.rt && w.rt !== '*' && t.rating && !rateRanges(w).some(([from, to]) => t.rating >= from && t.rating < to)) return false;
   return true;
 }
 
