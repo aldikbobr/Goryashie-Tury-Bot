@@ -987,7 +987,7 @@ export default {
     if (req.method === 'POST' && pathname === '/check-search') {
       if (req.headers.get('x-secret') !== env.UPDATE_SECRET) return new Response('forbidden', { status: 403 });
       try {
-        const hotels = await tvSearch({ a: '2', k: '0', ages: [], f: '*', c: '0', n: '1', p: '0' }, new Date());
+        const hotels = await tvSearch({ a: '2', k: '0', ages: [], f: '*', c: '0', n: '1', p: '0', d: '0', r: '*', bd: '*' }, new Date());
         return Response.json({ ok: true, hotels: hotels.length, groups: groupHotels(hotels).map(g => [g.title, g.hotels.length, g.hotels[0]?.name, g.hotels[0]?.rating]) });
       } catch (e) {
         return Response.json({ ok: false, error: String(e.message || e) });
