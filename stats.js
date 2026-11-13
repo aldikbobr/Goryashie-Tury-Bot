@@ -92,7 +92,7 @@ export async function route(req, env, tg) {
   const url = new URL(req.url), p = url.pathname;
   const go = p.match(/^\/go\/(bot|channel)(?:\/([\w-]{1,30}))?$/);
   if (go) { // отслеживаемая ссылка: считаем переход и отправляем в Telegram
-    const target = go[1] === 'bot' ? 'HotToursAstana_bot' : String(env.CHANNEL_ID || '@goryashie_tury_astana').replace('@', '');
+    const target = go[1] === 'bot' ? (env.BOT_USERNAME || 'HotToursAstana_bot') : String(env.CHANNEL_ID || '@goryashie_tury_astana').replace('@', '');
     await track(env, 'link', 0, go[1] + ':' + (go[2] || 'без метки'));
     return Response.redirect('https://t.me/' + target, 302);
   }

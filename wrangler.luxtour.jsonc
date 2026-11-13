@@ -1,0 +1,16 @@
+{
+  // второй бот @LuxTourBot на том же коде: без канала, два менеджера (Петропавловск и Астана)
+  // деплой: npx wrangler deploy -c wrangler.luxtour.jsonc
+  "name": "luxtour-bot",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-07",
+  // без расписания: лимит Cloudflare free — 5 cron на аккаунт уже занят; горящие туры обновляются при обращении клиента (worker.js, onTelegram)
+  "d1_databases": [{ "binding": "DB", "database_name": "luxtour-stats", "database_id": "079c66f8-858a-45c8-80a7-2a3acc6bac82" }],
+  "kv_namespaces": [{ "binding": "TOURS", "id": "55f0670187ff40d6beb6fbeba9f71377" }],
+  "vars": {
+    "BOT_USERNAME": "LuxTourBot",
+    "MANAGERS": "Петропавловск=77751294061,Астана=77083098730",
+    "POSTS_PER_UPDATE": "3",
+    "TOUR_LINK": "https://tourcart.ru/#tvofferid={id}&tvclid=95519&tvcu=3&tvnl=3"
+  }
+}

@@ -19,6 +19,11 @@ const tg = (env, method, body) =>
 const PICK_BUTTON = '🔎 Подобрать тур за 1 минуту';
 const MENU_BUTTON = PICK_BUTTON;
 const money = n => n.toLocaleString('ru-RU').replace(/,/g, ' ') + ' ₸';
+// менеджеры: MANAGERS="Петропавловск=77751294061,Астана=77083098730" — кнопка на каждого; без неё — одна CONTACT_URL
+const managers = env => env.MANAGERS ? env.MANAGERS.split(',').map(s => s.split('=')).map(([city, n]) => [city, 'https://wa.me/' + n]) : env.CONTACT_URL ? [['', env.CONTACT_URL]] : [];
+export const managerRows = (env, label, msg) => managers(env).map(([city, url]) => [{ text: city ? `${label} · ${city}` : label, url: `${url}?text=${encodeURIComponent(msg)}` }]);
+const leadRows = lead => !lead ? [] : Array.isArray(lead) ? lead : [[{ text: '📩 Написать менеджеру', url: lead }]];
+const botUrl = env => 'https://t.me/' + (env.BOT_USERNAME || 'HotToursAstana_bot');
 const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
 function caption(t, updated) {
@@ -30,8 +35,8 @@ function caption(t, updated) {
 function buttons(env, t) {
   const row = [{ text: 'Посмотреть тур', url: t.link || env.TOUR_LINK.replace('{id}', t.id) }];
   // в WhatsApp сразу подставляется название тура, чтобы менеджер понял, о чём речь
-  if (env.CONTACT_URL) row.push({ text: 'Забронировать', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу забронировать тур: ${t.title}`)}` });
-  return { inline_keyboard: [row] };
+  const book = managerRows(env, 'Забронировать', `Здравствуйте! Хочу забронировать тур: ${t.title}`);
+  return { inline_keyboard: book.length === 1 ? [[...row, ...book[0]]] : [row, ...book] };
 }
 
 function sendTour(env, chat_id, t, updated) {
@@ -316,7 +321,7 @@ export function paramMessages(w, now, hotels, concept, lead, withConcept = true)
   const out = [{
     text: groupHeader('🎯 <b>ПОДБОРКА ПО ВАШИМ ПАРАМЕТРАМ</b>') + '\n' + (main.length ? main.map((h, i) => card(main, h, i)).join('\n\n')
       : 'Под ваши параметры отелей не нашлось. Попробуйте изменить звёздность, рейтинг, пляж или бюджет — или напишите менеджеру.'),
-    kb: [...btns(main), ...(lead ? [[{ text: '📩 Написать менеджеру', url: lead }]] : [])],
+    kb: [...btns(main), ...leadRows(lead)],
   }];
   const ids = new Set(main.map(h => h.id));
   const extra = withConcept ? concept.filter(h => fits(w, h) && !ids.has(h.id)).sort(byPrice).slice(0, 1) : []; // шестой, дополнительный вариант
@@ -347,7 +352,7 @@ function groupMessage(w, now, g, lead) {
     text: groupHeader(g.head || ratingTitle(g)) + '\n' + (cards.join('\n\n') || 'Под ваш запрос отелей с таким рейтингом не нашлось.'),
     kb: [
       ...g.hotels.map((h, i) => [{ text: `${i + 1}. ${h.name} — ${money(h.price)}`, url: hotelLink(w, now, h) }]),
-      ...(lead ? [[{ text: '📩 Написать менеджеру', url: lead }]] : []),
+      ...leadRows(lead),
     ],
   };
 }
@@ -607,6 +612,8 @@ async function onTelegram(req, env, ctx) {
   const u = await req.json();
   const data = JSON.parse((await env.TOURS.get('tours')) || '{"items":[]}');
   const now = new Date();
+  // бот без канала (LuxTour) работает без расписания Cloudflare: горящие туры обновляются при обращении клиента, не чаще раза в 6 часов
+  if (!env.CHANNEL_ID && now - Date.parse(data.updated || 0) > 6 * 3600e3) ctx.waitUntil(scrapeHot(env).catch(() => {}));
 
   if (u.callback_query) {
     const q = u.callback_query, chat_id = q.message.chat.id, message_id = q.message.message_id;
@@ -672,7 +679,7 @@ async function onTelegram(req, env, ctx) {
 // итог подбора: 3 подборки по рейтингу (поиск Tourvisor; при сбое — ссылки) + горящие туры + заявка менеджеру
 async function results(env, w, now, chat_id, data, sum) {
   const ids = [];
-  const lead = `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Подберите, пожалуйста, тур.\n' + sum)}`; // «Написать менеджеру» с запросом клиента
+  const leadMsg = 'Здравствуйте! Подберите, пожалуйста, тур.\n' + sum, lead = managerRows(env, '📩 Написать менеджеру', leadMsg); // «Написать менеджеру» с запросом клиента
   await track(env, 'search', chat_id, [w.c === '*' ? 'Любая страна' : COUNTRIES[+w.c], DEPARTURES[+w.d][0], +w.k ? 'с детьми' : 'взрослые'].join('|'));
   const send = async body => { const r = await tg(env, 'sendMessage', { chat_id, ...body }); if (r.ok) ids.push(r.result.message_id); return r; };
   await send({ text: '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ</b>', parse_mode: 'HTML' }); // разделитель перед каждой свежей подборкой — всегда
@@ -683,8 +690,8 @@ async function results(env, w, now, chat_id, data, sum) {
       const { hotels, concept } = await ratingSelections(env, w, now);
       const showConcept = (await getCfg(env)).concept !== false; // выключается в пульте
       groups = isFiltered(w)
-        ? paramMessages(w, now, hotels, concept, env.CONTACT_URL && lead, showConcept) // выбрана звёздность, рейтинг или пляж: до 5 отелей + 1 концепция
-        : [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g, env.CONTACT_URL && lead)).concat(showConcept ? conceptMessages(w, now, hotels, concept) : []); // рейтинг → звёздность → концепция, затем горящие
+        ? paramMessages(w, now, hotels, concept, lead, showConcept) // выбрана звёздность, рейтинг или пляж: до 5 отелей + 1 концепция
+        : [...groupHotels(hotels), ...starGroups(hotels)].map(g => groupMessage(w, now, g, lead)).concat(showConcept ? conceptMessages(w, now, hotels, concept) : []); // рейтинг → звёздность → концепция, затем горящие
     } catch (e) {
       await alertAdmin(env, `Поиск Tourvisor не сработал (${String(e.message || e).slice(0, 150)}). Клиентам сейчас отправляются ссылки на Tourvisor.`);
     }
@@ -711,7 +718,7 @@ async function results(env, w, now, chat_id, data, sum) {
       + '\n\n' + INCLUDED
       + '\n⏱ <b>Стоимость актуальна на момент поиска</b>, наличие уточняйте у менеджера',
     parse_mode: 'HTML',
-    reply_markup: env.CONTACT_URL ? { inline_keyboard: [[{ text: '📩 Отправить запрос менеджеру', url: lead }]] } : undefined,
+    reply_markup: lead.length ? { inline_keyboard: managerRows(env, '📩 Отправить запрос менеджеру', leadMsg) } : undefined,
   });
   await remember(env, chat_id, ids, true); // подборка готова
 }
@@ -741,8 +748,8 @@ export async function channelDigest(env, now, search = tvSearch) {
     (await hotBlock(env, now));
   return {
     text,
-    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
-      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересует тур из подборки дня в канале.')}` }]] : [])],
+    kb: [[{ text: PICK_BUTTON, url: botUrl(env) }],
+      ...managerRows(env, '📩 Написать менеджеру', 'Здравствуйте! Интересует тур из подборки дня в канале.')],
   };
 }
 
@@ -817,8 +824,8 @@ export async function channelHot(env, now) {
   return {
     text: `🔥 <b>ГОРЯЩИЕ ТУРЫ · ${date}</b>\n<i>Из городов Казахстана, самые большие скидки</i>\n\n` + INCLUDED +
       '\n⏱ <b>Стоимость актуальна на момент публикации</b>, наличие уточняйте у менеджера' + block,
-    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
-      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent('Здравствуйте! Интересуют горящие туры из вечерней подборки.')}` }]] : [])],
+    kb: [[{ text: PICK_BUTTON, url: botUrl(env) }],
+      ...managerRows(env, '📩 Написать менеджеру', 'Здравствуйте! Интересуют горящие туры из вечерней подборки.')],
   };
 }
 
@@ -888,8 +895,8 @@ export async function channelWeather(env, now) {
     `\n\n${diff > 0 ? `☀️ Там на <b>${diff}°</b> теплее, чем в Астане. ` : ''}Сейчас разгар сезона — самое время улететь к морю!`;
   return {
     text,
-    kb: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
-      ...(env.CONTACT_URL ? [[{ text: '📩 Написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу тур: ${name}, ${country}.`)}` }]] : [])],
+    kb: [[{ text: PICK_BUTTON, url: botUrl(env) }],
+      ...managerRows(env, '📩 Написать менеджеру', `Здравствуйте! Хочу тур: ${name}, ${country}.`)],
   };
 }
 
@@ -911,8 +918,8 @@ const CREATIVES = [
 export async function channelEvening(env, now) {
   const [scene, head, body, country] = CREATIVES[Math.floor(now.getTime() / DAY) % CREATIVES.length];
   const text = `🌅 <b>${head}</b>\n\n${body}\n\n🔥 Горящие туры из Астаны — в нашем боте. Цены меняются каждый день, наличие уточняйте у менеджера.\n\n<i>Иллюстрация создана нейросетью</i>`;
-  const kb = [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }],
-    ...(env.CONTACT_URL ? [[{ text: '📩 Хочу в отпуск — написать менеджеру', url: `${env.CONTACT_URL}?text=${encodeURIComponent(`Здравствуйте! Хочу в отпуск: ${country}.`)}` }]] : [])];
+  const kb = [[{ text: PICK_BUTTON, url: botUrl(env) }],
+    ...managerRows(env, '📩 Хочу в отпуск — написать менеджеру', `Здравствуйте! Хочу в отпуск: ${country}.`)];
   let image = null;
   try {
     const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: `${scene}, photorealistic travel advertisement photo, vibrant colors, no text, no people faces`, steps: 4 });
@@ -934,12 +941,12 @@ async function postEvening(env, now) {
 async function runChannel(env, job, now = new Date()) {
   if (job === 'stats') return { ok: true, subs: await snapshotSubs(env, tg) }; // число подписчиков канала раз в день
   if ((await getCfg(env)).posts[job === 'digest' ? 'tours' : job] === false) return { ok: true, skipped: 'выключено в пульте' };
-  if (!env.CHANNEL_ID) return { ok: false, error: 'канал не задан' };
+  if (!env.CHANNEL_ID && job !== 'scrape') return { ok: false, error: 'канал не задан' }; // бот без канала только обновляет горящие туры
   try {
     if (job === 'news') {
       const text = await channelNews(env);
       if (!text) return { ok: true, posted: 0 };
-      const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: PICK_BUTTON, url: 'https://t.me/HotToursAstana_bot' }]] } });
+      const r = await tg(env, 'sendMessage', { chat_id: env.CHANNEL_ID, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: PICK_BUTTON, url: botUrl(env) }]] } });
       return { ok: r.ok, error: r.description };
     }
     if (job === 'scrape') return { ok: true, ...(await scrapeHot(env)) };

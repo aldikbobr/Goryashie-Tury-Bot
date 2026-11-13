@@ -8,3 +8,4 @@ avatar/avatar-*.jpg
 avatar/*.svg
 !avatar/hat-v8.svg
 .panel-key
+.luxtour-secrets.json

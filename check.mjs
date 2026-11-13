@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { astanaDay } from './stats.js';
 import { kompasUrl } from './kompas.js';
-import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, paramMessages, hotFits, orderResorts, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening } from './worker.js';
+import worker, { parseHot, scrapeHot, matches, tourInfo, groupHotels, conceptMessages, paramMessages, hotFits, orderResorts, channelDigest, channelNews, hotBlock, channelHot, channelWeather, resortOfDay, channelEvening, managerRows } from './worker.js';
 
 // Tourvisor в проверке подменён: ответ как у настоящего поиска (Турция/Таиланд, 4 отеля с разным рейтингом)
 let tvMode = 'ok';
@@ -700,4 +700,10 @@ assert.equal((await setCfgReq('concept', true)).ok, true);
 const log = (await (await panelGet(`/panel/api?from=${today9}&to=${today9}`, 'secret-key')).json()).changes;
 assert.ok(log.some(c => c.src === 'код' && c.text === 'Кнопка Назад на каждом шаге'));
 assert.ok(log.some(c => c.src === 'пульт' && c.text === 'Настройка в пульте: posts.news = false'));
+// два менеджера (бот LuxTour): по кнопке на город; без MANAGERS — одна CONTACT_URL
+const mgr = managerRows({ MANAGERS: "Петропавловск=77751294061,Астана=77083098730" }, "📩 Написать менеджеру", "Привет");
+assert.deepEqual(mgr.map(r => r[0].text), ["📩 Написать менеджеру · Петропавловск", "📩 Написать менеджеру · Астана"]);
+assert.equal(mgr[1][0].url, "https://wa.me/77083098730?text=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82");
+assert.equal(managerRows({ CONTACT_URL: "https://wa.me/1" }, "X", "y")[0][0].text, "X");
+
 console.log('OK');
